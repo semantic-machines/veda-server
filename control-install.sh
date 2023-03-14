@@ -8,7 +8,7 @@ INSTALL_PATH=$PWD
 # Get other dependencies
 #LIB_NAME[5]="libglib2.0-dev"
 #LIB_NAME[6]="cmake"
-#LIB_NAME[7]="libtool-bin"
+LIB_NAME[7]="libtool-bin"
 #LIB_NAME[8]="pkg-config"
 #LIB_NAME[9]="build-essential"
 #LIB_NAME[10]="autoconf"
