@@ -1,0 +1,24 @@
+[package]
+name = "veda-tools"
+version = "0.1.0"
+authors = ["Itiua <ValeriyBushenev@gmail.com>"]
+edition = "2021"
+
+[dependencies]
+chrono = "0.4"
+#time = "0.3"
+log = "0.4.13"
+nng = "1.0.0"
+serde_json = "1.0.61"
+serde = "1.0.119"
+url = "2.2.0"
+quote = "1.0.8"
+type-cli = "0.0.3"
+crc32fast = "1.2.0"
+flate2 = "1.0"
+systemstat = "0.1.7"
+stopwatch = "0.0.7"
+num_cpus = "1.0"
+diligent-date-parser = "0.1.2"
+
+v_v8 = { package = "v-common-v8", version = "=0.1.124" }

@@ -1,0 +1,365 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix v-fc: <http://semantic-machines.com/veda/veda-function-create/> .
+@prefix v-fs: <http://semantic-machines.com/veda/veda-search/> .
+@prefix v-s: <http://semantic-machines.com/veda/veda-schema/> .
+@prefix v-ui: <http://semantic-machines.com/veda/veda-ui/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix cfg: <http://semantic-machines.com/veda/config/> .
+
+<http://semantic-machines.com/veda/veda-function-property-authorization>
+  rdf:type owl:Ontology ;
+  rdfs:label "Онтология системы Veda. Функция 'Авторизация по значению свойства/выражения'"@ru ;
+  rdfs:label "Veda system ontology. Function 'Authorization on predicate/expression value'"@en ;
+#  owl:versionInfo "1.3" ;
+  v-s:loadPriority 3 ;
+.
+
+# ------------------------------------------------------------ СТРОКИ --
+
+v-s:Event_GroupGenerator
+  rdf:type v-s:Event ;
+  v-s:author cfg:VedaSystemAppointment ;
+  rdfs:label "Скрипт распределения по группам авторизации" ;
+  v-s:triggerByType v-s:GroupAuthorized ;
+  v-s:preventByType v-s:Version;
+#  v-s:executeIfEvent "exim";
+  v-s:runAt "V8.LowPriority" ;
+  v-s:script """
+/* Available variables:
+ * ticket = superuser ticket
+ * document = captured document
+ * user_uri = user whose actions triggered event
+ * prev_state = previous state of the captured document
+ * _event_id = id of the event to prevent cycles in triggers. Must be passed to every function that modifies DB.
+ * parent_script_id = id of the parent script that triggered this event.
+ * parent_document_id = id of the document that triggered this event.
+ * super_classes = super classes of the document.
+ */
+
+var areActual = get_individual(veda.ticket, "v-s:GroupsGeneratorsAreActual");
+areActual = areActual && areActual["rdf:value"] && areActual["rdf:value"][0].data;
+veda.GroupGenerators = areActual && veda.GroupGenerators;
+
+if (!veda.GroupGenerators) {
+  console.log("(Re)build group generators");
+  veda.GroupGenerators = query(veda.ticket, "'rdf:type' === 'v-s:GroupGenerator'").result.reduce(function (acc, generator_uri) {
+    var generator = get_individual(veda.ticket, generator_uri);
+    var authClasses = veda.Util.getUris(generator["v-s:authClass"]);
+    var authProperty = veda.Util.getFirstValue(generator["v-s:authProperty"]);
+    var authFunction = veda.Util.getFirstValue(generator["v-s:authFunction"]);
+    var authGroupFunction = veda.Util.getFirstValue(generator["v-s:authGroupFunction"]);
+    var authValue = veda.Util.getFirstValue(generator["v-s:authValue"]);
+    var canCreate = veda.Util.getFirstValue(generator["v-s:canCreate"]) || 0;
+    var canRead = veda.Util.getFirstValue(generator["v-s:canRead"]) || 0;
+    var canUpdate = veda.Util.getFirstValue(generator["v-s:canUpdate"]) || 0;
+    var canDelete = veda.Util.getFirstValue(generator["v-s:canDelete"]) || 0;
+    var power = canCreate * 1 + canRead * 2 + canUpdate * 4 + canUpdate * 8;
+    var keepMembershipOnDelete = veda.Util.getFirstValue(generator["v-s:keepMembershipOnDelete"]);
+    var fn;
+    if (authProperty) {
+      fn = new Function("veda", "return veda.Util.getValues(this['" + authProperty + "']);");
+    } else if (authFunction) {
+      fn = new Function("veda", authFunction);
+    } else if (authGroupFunction) {
+      fn = new Function("veda", authGroupFunction);
+      fn.isGroupFn = true;
+    }
+    fn.generatorUri = generator_uri;
+    fn.authValue = authValue;
+    fn.keep = keepMembershipOnDelete;
+    fn.power = power;
+    authClasses.forEach(function (authClass) {
+      acc[authClass] = (acc[authClass] || []).concat(fn);
+    });
+    return acc;
+  }, {});
+  set_in_individual(veda.ticket, {
+    "@": "v-s:GroupsGeneratorsAreActual",
+    "rdf:value": veda.Util.newBool(true)
+  });
+  for (var _class in veda.GroupGenerators) {
+    var _class_gg = veda.GroupGenerators[_class].map(function (fn) {
+      return fn.generatorUri;
+    });
+    console.log(_class, ":", "[", _class_gg.join(", "), "]");
+  }
+}
+
+var isDeleted = veda.Util.hasValue(document, "v-s:deleted", {data: true, type: "Boolean"});
+if (isDeleted) {
+  var groupsToDeleteFrom = generateGroups(prev_state);
+  console.log("Document deleted, groups to delete from =", Object.keys(groupsToDeleteFrom));
+
+  var keep, group_label;
+  for(var group_uri in groupsToDeleteFrom) {
+    keep = groupsToDeleteFrom[group_uri].keep;
+    group_label = groupsToDeleteFrom[group_uri].label;
+    if (keep) {
+      console.log("Keep membership in", group_uri, group_label);
+    } else {
+      removeMembership(group_uri, groupsToDeleteFrom);
+    }
+  }
+  return;
+}
+
+var currGroups = generateGroups(document),
+    currGroupsUris = Object.keys(currGroups).sort(),
+    prevGroups = generateGroups(prev_state),
+    prevGroupsUris = Object.keys(prevGroups).sort(),
+    i = 0,
+    j = 0,
+    currGroup,
+    prevGroup;
+
+console.log("prev groups =", prevGroupsUris);
+console.log("curr groups =", currGroupsUris);
+
+while ((currGroup = currGroupsUris[i]) && (prevGroup = prevGroupsUris[j])) {
+  if (prevGroup < currGroup) {
+    removeMembership(prevGroup, prevGroups);
+    j++;
+  } else if (prevGroup > currGroup) {
+    addMembership(currGroup, currGroups);
+    i++;
+  } else {
+    checkAddMembership(currGroup, currGroups);
+    i++;
+    j++;
+  }
+}
+while (prevGroup = prevGroupsUris[j]) {
+  removeMembership(prevGroup, prevGroups);
+  j++;
+}
+while (currGroup = currGroupsUris[i]) {
+  addMembership(currGroup, currGroups);
+  i++;
+}
+
+function addMembership(group_uri, groups) {
+  var mem_uri = "d:mem-" + veda.Util.Sha256.hash(document["@"] + " " + group_uri).substring(32);
+  var group_label = groups[group_uri].label;
+  var power = groups[group_uri].power;
+  var mem = {
+    "@": mem_uri,
+    "rdf:type": veda.Util.newUri("v-s:Membership"),
+    "rdfs:label": veda.Util.newStr("Membership. " + group_label),
+    "v-s:resource": veda.Util.newUri(document["@"]),
+    "v-s:memberOf": veda.Util.newUri(group_uri),
+    "v-s:creator": veda.Util.newUri("v-s:Event_GroupGenerator"),
+    "v-s:created": veda.Util.newDate(new Date())
+  };
+  if (power & 8) {
+    mem["v-s:canDelete"] = veda.Util.newBool(true);
+  }
+  if (power & 4) {
+    mem["v-s:canUpdate"] = veda.Util.newBool(true);
+  }
+  if (power & 2) {
+    mem["v-s:canRead"] = veda.Util.newBool(true);
+  }
+  if (power & 1) {
+    mem["v-s:canCreate"] = veda.Util.newBool(true);
+  }
+  put_individual(veda.ticket, mem);
+  var power_str = ""
+  power_str += (power & 1) ? "C" : "";
+  power_str += (power & 2) ? "R" : "";
+  power_str += (power & 4) ? "U" : "";
+  power_str += (power & 8) ? "D" : "";
+  console.log("Added to", group_uri, group_label, "(", power_str, ")");
+}
+
+function removeMembership(group_uri, groups) {
+  var group_label = groups[group_uri].label;
+  var mem_uri = "d:mem-" + veda.Util.Sha256.hash(document["@"] + " " + group_uri).substring(32);
+  remove_individual(veda.ticket, mem_uri);
+  console.log("Removed from", group_uri, group_label);
+}
+
+function checkAddMembership(group_uri, groups) {
+  var mem_uri = "d:mem-" + veda.Util.Sha256.hash(document["@"] + " " + group_uri).substring(32);
+  var mem = get_individual(veda.ticket, mem_uri);
+  var group_label = groups[group_uri].label;
+  var power = groups[group_uri].power;
+  if (!mem) {
+    addMembership(group_uri, groups);
+  } else {
+    var canCreate = veda.Util.getFirstValue(mem["v-s:canCreate"]) || 0;
+    var canRead = veda.Util.getFirstValue(mem["v-s:canRead"]) || 0;
+    var canUpdate = veda.Util.getFirstValue(mem["v-s:canUpdate"]) || 0;
+    var canDelete = veda.Util.getFirstValue(mem["v-s:canDelete"]) || 0;
+    var mem_power = canCreate * 1 + canRead * 2 + canUpdate * 4 + canUpdate * 8;
+    if ( power ^ mem_power ) {
+      addMembership(group_uri, groups);
+    } else {
+      var power_str = "";
+      power_str += (power & 1) ? "C" : "";
+      power_str += (power & 2) ? "R" : "";
+      power_str += (power & 4) ? "U" : "";
+      power_str += (power & 8) ? "D" : "";
+      console.log("Membership exists", group_uri, group_label, "(", power_str, ")");
+    }
+  }
+}
+
+function checkAddGroup(group_uri, group_label) {
+  var group = get_individual(veda.ticket, group_uri);
+  if ( !group ) {
+    group = {
+      "@": group_uri,
+      "rdf:type": veda.Util.newUri("v-s:Group"),
+      "rdfs:label": veda.Util.newStr(group_label),
+      "v-s:creator": veda.Util.newUri("v-s:Event_GroupGenerator"),
+      "v-s:created": veda.Util.newDate(new Date())
+    };
+    put_individual(veda.ticket, group);
+    console.log("Group created", group_uri, group_label);
+  }
+}
+
+function generateGroups(document) {
+  var groups = {};
+  if (!document) { return groups; }
+  var types = veda.Util.getUris(document["rdf:type"]);
+  var _super = JSON.parse(super_classes);
+  _super = _super.concat(types);
+
+  for (var i = 0, _class, fns; (_class = _super[i]); i++) {
+    if (_class in veda.GroupGenerators) {
+      fns = veda.GroupGenerators[_class];
+      for (var j = 0, fn, fn_value, group_concat_uri, hash, group_uri, group_label; (fn = fns[j]); j++) {
+        if ( !fn.isGroupFn ) {
+          fn_value = fn.call(document, veda);
+          if (typeof fn_value === "undefined") {
+            continue;
+          } else {
+            if ( !Array.isArray(fn_value) ) {
+              fn_value = [fn_value];
+            }
+            fn_value.forEach(function (fn_value_item) {
+              if (typeof fn_value_item === "undefined") { return; }
+              if (typeof fn.authValue !== "undefined") {
+                fn_value_item = (fn.authValue.toString() === fn_value_item.toString());
+                if (fn_value_item === false) { return; }
+                fn_value_item = fn.authValue;
+              }
+              group_concat_uri = fn.generatorUri + " " + fn_value_item;
+              hash = veda.Util.Sha256.hash(group_concat_uri).substring(32);
+              group_uri = "d:grp-" + hash;
+              group_label = "Auth group. Generator: " + fn.generatorUri + ", value: " + fn_value_item;
+              groups[group_uri] = { "label": group_label, "keep": fn.keep, "power": fn.power };
+              checkAddGroup(group_uri, group_label);
+            });
+          }
+        } else {
+          group_uri = fn.call(document, veda);
+          if (!group_uri) { continue; }
+          if ( !Array.isArray(group_uri) ) {
+            group_uri = [group_uri];
+          }
+          group_label = "Auth group. Generator: " + fn.generatorUri + ", calculated group";
+          group_uri.forEach(function (group_uri_item) {
+            if (typeof group_uri_item === "undefined") { return; }
+            groups[group_uri_item] = { "label": group_label, "keep": fn.keep, "power": fn.power };
+            checkAddGroup(group_uri_item, group_label);
+          });
+        }
+      }
+    }
+  }
+  return groups;
+}
+  """ ;
+.
+
+##### Permission and group generator example #####
+
+v-s:GG_OrganizationStructureGroup
+  rdf:type v-s:GroupGenerator ;
+  v-s:authClass v-s:OrgGroup ;
+  v-s:authClass v-s:Subsidiary ;
+  v-s:authClass v-s:Department ;
+  v-s:authClass v-s:Position ;
+  v-s:authClass v-s:Appointment ;
+  v-s:authClass v-s:Person ;
+  v-s:keepMembershipOnDelete "true"^^xsd:boolean;
+  v-s:authGroupFunction """
+var org = veda.Util.getUri(this["v-s:parentOrganization"]);
+return org ? org + "_group" : undefined;
+  """;
+  rdfs:label "Auth group generator: put all organization's units to special group with id = organizationId_group" ;
+.
+
+v-s:GG_AppointmentToOrganization
+  rdf:type v-s:GroupGenerator ;
+  rdfs:label "Auth group generator: put appointment to parent organization group" ;
+  v-s:authClass v-s:Appointment ;
+  v-s:authGroupFunction """
+return veda.Util.getPropertyChain(this, "v-s:parentOrganization");
+  """;
+  v-s:keepMembershipOnDelete true ;
+  v-s:canRead true ;
+  v-s:deleted true;
+.
+
+v-s:GG_PersonToAllUsersGroup
+  rdf:type v-s:GroupGenerator ;
+  v-s:authClass v-s:Person ;
+  v-s:authGroupFunction """
+return ( this["@"] !== "cfg:Guest" ? "cfg:AllUsersGroup" : undefined );
+  """;
+  rdfs:label "Auth group generator: put person to cfg:AllUsersGroup (except for cfg:Guest)" ;
+.
+
+# Обработка v-s:ClassAuthorized ----------------------------------------
+
+cfg:Event_7
+  rdf:type v-s:Event ;
+  v-s:author cfg:VedaSystemAppointment ;
+  rdfs:label "Скрипт включает индивид в группу индивидов своего класса." ;
+  rdfs:comment "Скрипт включает индивид в группу индивидов своего класса." ;
+  v-s:triggerByType v-s:ClassAuthorized ;
+  v-s:preventByType v-s:Version;
+#  v-s:executeIfEvent "exim";
+  v-s:script """
+/* Available variables:
+ * ticket = superuser ticket
+ * document = captured document
+ * user_uri = user whose actions triggered event
+ * prev_state = previous state of the captured document
+ * _event_id = id of the event to prevent cycles in triggers. Must be passed to every function that modifies DB.
+ * parent_script_id = id of the parent script that triggered this event.
+ * parent_document_id = id of the document that triggered this event.
+ * super_classes = super classes of the document.
+ */
+
+if (parent_document_id && parent_document_id === document["@"]) {
+  // print("Not first class event. Exit.");
+  return;
+}
+
+var doc_uri = document["@"],
+  _classes = veda.Util.getUris( document["rdf:type"] );
+
+_classes.map(function (class_uri) {
+  var class_group_uri = class_uri + "_group", // uri группы индивидов класса
+      uri = "d:membership_" + doc_uri.split(":").join("_") + "_" + class_group_uri.split(":").join("_");
+
+  var membership = {
+    "@" : uri,
+    "rdf:type"     : veda.Util.newUri("v-s:Membership"),
+    "v-s:memberOf" : veda.Util.newUri(class_group_uri),
+    "v-s:resource" : veda.Util.newUri(doc_uri),
+    "rdfs:comment" : veda.Util.newStr("создано cfg:Event_7"),
+    "v-s:creator": veda.Util.newUri("cfg:Event_7"),
+    "v-s:created": veda.Util.newDate(new Date())
+  };
+  put_individual (ticket, membership);
+});
+  """ ;
+.
+
