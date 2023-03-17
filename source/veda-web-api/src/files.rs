@@ -74,8 +74,12 @@ pub(crate) async fn load_file(
             let file_ext = file_path.extension().unwrap_or_default().to_str().unwrap();
             let file_mime = actix_files::file_extension_to_mime(file_ext);
 
-            let last_modified =
-                DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(FileTime::from_last_modification_time(&metadata).unix_seconds(), 0), Utc).to_rfc2822();
+            let last_modified = DateTime::<Utc>::from_utc(
+                NaiveDateTime::from_timestamp_opt(FileTime::from_last_modification_time(&metadata).unix_seconds(), 0)
+                    .ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid timestamp"))?,
+                Utc,
+            )
+            .to_rfc2822();
 
             let size = file_info.get_first_integer("v-s:fileSize").unwrap_or_default() as u64;
             let mut http_resp = HttpResponse::Ok()

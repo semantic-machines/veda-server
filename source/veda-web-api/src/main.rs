@@ -76,19 +76,21 @@ async fn main() -> std::io::Result<()> {
 
     let mut tt_config = None;
     if let Some(p) = Module::get_property("db_connection") {
-        match Url::parse(&p) {
-            Ok(url) => {
-                let host = url.host_str().unwrap_or("127.0.0.1");
-                let port = url.port().unwrap_or(3309);
-                let user = url.username();
-                let pass = url.password().unwrap_or("123");
-                info!("Trying to connect to Tarantool, host: {host}, port: {port}, user: {user}");
-                tt_config = Some(ClientConfig::new(format!("{host}:{port}"), user, pass).set_timeout_time_ms(2000).set_reconnect_time_ms(2000));
-            },
-            Err(e) => {
-                error!("fail parse {p}, err={e}");
-                return Ok(());
-            },
+        if p.contains("tcp://") {
+            match Url::parse(&p) {
+                Ok(url) => {
+                    let host = url.host_str().unwrap_or("127.0.0.1");
+                    let port = url.port().unwrap_or(3309);
+                    let user = url.username();
+                    let pass = url.password().unwrap_or("123");
+                    info!("Trying to connect to Tarantool, host: {host}, port: {port}, user: {user}");
+                    tt_config = Some(ClientConfig::new(format!("{host}:{port}"), user, pass).set_timeout_time_ms(2000).set_reconnect_time_ms(2000));
+                },
+                Err(e) => {
+                    error!("fail parse {p}, err={e}");
+                    return Ok(());
+                },
+            }
         }
     }
 

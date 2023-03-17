@@ -182,9 +182,12 @@ async fn direct_query(
         };
         log(None, &uinf, "query", &format!("{}, top = {}, limit = {}, from = {}", &req.query, req.top, req.limit, req.from), ResultCode::Ok);
 
+        replace_word(&mut req.query, "final", "--FINAL--");
+
         match prepare_sql_with_params(&req.query.replace('`', "\""), &mut Individual::default(), "clickhouse") {
-            Ok(sql) => {
+            Ok(mut sql) => {
                 info!("{sql}");
+                replace_word(&mut sql, "--FINAL--", "FINAL");
                 req.query = sql;
                 res = query_endpoints.ch_client.lock().await.select_async(req, OptAuthorize::YES).await?;
             },
@@ -272,4 +275,32 @@ async fn direct_query(
 
         Ok(HttpResponse::new(StatusCode::from_u16(res.result_code as u16).unwrap()))
     }
+}
+
+use regex::Regex;
+
+fn replace_word(text: &str, a: &str, b: &str) -> String {
+    let a_lower = a.to_lowercase();
+    let re = Regex::new(r"[\w']+").unwrap();
+    let mut replaced_text = String::new();
+    let mut last_end = 0;
+
+    for word_match in re.find_iter(text) {
+        let (start, end) = (word_match.start(), word_match.end());
+        let word = &text[start..end];
+        let word_lower = word.to_lowercase();
+
+        if word_lower == a_lower {
+            replaced_text.push_str(&text[last_end..start]);
+            replaced_text.push_str(b);
+        } else {
+            replaced_text.push_str(&text[last_end..end]);
+        }
+
+        last_end = end;
+    }
+
+    replaced_text.push_str(&text[last_end..]);
+
+    replaced_text
 }
