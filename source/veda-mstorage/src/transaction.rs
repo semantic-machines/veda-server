@@ -1,3 +1,4 @@
+// Import necessary modules
 use chrono::Utc;
 use v_common::module::info::ModuleInfo;
 use v_common::module::ticket::Ticket;
@@ -10,36 +11,42 @@ use v_common::v_api::obj::ResultCode;
 use v_common::v_queue::queue::Queue;
 use v_common::v_queue::record::MsgType;
 
+// Structure definition of TransactionItem
 pub struct TransactionItem {
-    pub indv_id: String,
-    pub cmd: IndvOp,
-    pub original_cmd: IndvOp,
-    pub new_state: Vec<u8>,
-    pub prev_state: Vec<u8>,
-    pub update_counter: i64,
+    pub indv_id: String,      // individual id
+    pub cmd: IndvOp,          // command to be performed
+    pub original_cmd: IndvOp, // original command
+    pub new_state: Vec<u8>,   // new state of the individual
+    pub prev_state: Vec<u8>,  // previous state of the individual
+    pub update_counter: i64,  // counter for updates
 }
 
+// Structure definition of Transaction
 pub struct Transaction<'a> {
-    pub id: i64,
-    pub event_id: Option<&'a str>,
-    pub assigned_subsystems: Option<i64>,
-    pub src: Option<&'a str>,
-    pub queue: Vec<TransactionItem>,
-    pub sys_ticket: String,
-    pub ticket: Ticket,
+    pub id: i64,                          // transaction id
+    pub event_id: Option<&'a str>,        // event id
+    pub assigned_subsystems: Option<i64>, // assigned subsystems
+    pub src: Option<&'a str>,             // source
+    pub queue: Vec<TransactionItem>,      // vector of TransactionItem
+    pub sys_ticket: String,               // system ticket
+    pub ticket: Ticket,                   // ticket
 }
 
+// Implementation of methods for Transaction
 impl<'a> Transaction<'a> {
+    // Add item to the transaction queue
     pub(crate) fn add_item(&mut self, item: TransactionItem) {
         self.queue.push(item);
     }
 
+    // Commit the transactions
     pub(crate) fn commit(&mut self, storage: &mut VStorage, queue_out: &mut Queue, mstorage_info: &mut ModuleInfo) -> Result<i64, ResultCode> {
         let mut op_id = self.id;
 
         for el in self.queue.iter() {
             op_id += 1;
 
+            // Skip if individual ID is empty
             if el.indv_id.is_empty() {
                 warn!(
                     "SKIP:{}, {} id={}:{}, ticket={}, event_id={}, src={}",
@@ -54,6 +61,7 @@ impl<'a> Transaction<'a> {
                 continue;
             }
 
+            // Remove the individual if the command is 'Remove'
             if el.cmd == IndvOp::Remove {
                 if storage.remove(StorageId::Individuals, &el.indv_id) {
                     info!("remove individual, id = {}", el.indv_id);
@@ -77,7 +85,7 @@ impl<'a> Transaction<'a> {
                 return Err(ResultCode::InternalServerError);
             }
 
-            // add to queue
+            // Add the individual to the queue
             let mut store_to_queue = if let Some(i) = self.assigned_subsystems {
                 i != 1
             } else {
@@ -126,12 +134,14 @@ impl<'a> Transaction<'a> {
                 queue_element.add_integer("op_id", op_id);
                 queue_element.add_integer("u_count", el.update_counter);
 
+                // Add assigned subsystems, if available
                 if let Some(i) = self.assigned_subsystems {
                     queue_element.add_integer("assigned_subsystems", i);
                 }
 
                 debug!("add to queue: uri={}", el.indv_id);
 
+                // Serialize and add individual to the queue
                 let mut raw1: Vec<u8> = Vec::new();
                 if let Err(e) = to_msgpack(&queue_element, &mut raw1) {
                     error!("failed to serialize, err = {:?}", e);
@@ -144,6 +154,7 @@ impl<'a> Transaction<'a> {
             }
         }
 
+        // Store transaction information in the module information storage
         if let Err(e) = mstorage_info.put_info(op_id, op_id) {
             error!("failed to put info, err = {:?}", e);
             return Err(ResultCode::InternalServerError);
