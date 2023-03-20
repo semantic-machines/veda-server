@@ -182,13 +182,13 @@ async fn direct_query(
         };
         log(None, &uinf, "query", &format!("{}, top = {}, limit = {}, from = {}", &req.query, req.top, req.limit, req.from), ResultCode::Ok);
 
-        replace_word(&mut req.query, "final", "--FINAL--");
+        //warn! forced measure, as library sqlparser does not handle the FINAL keyword
+        req.query = replace_word(&req.query, "final", " join 'clickhouse-final' ");
 
         match prepare_sql_with_params(&req.query.replace('`', "\""), &mut Individual::default(), "clickhouse") {
-            Ok(mut sql) => {
-                info!("{sql}");
-                replace_word(&mut sql, "--FINAL--", "FINAL");
-                req.query = sql;
+            Ok(sql) => {
+                //info!("{sql}");
+                req.query = sql.replace("JOIN 'clickhouse-final'", " FINAL ");
                 res = query_endpoints.ch_client.lock().await.select_async(req, OptAuthorize::YES).await?;
             },
             Err(e) => {
