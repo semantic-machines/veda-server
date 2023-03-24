@@ -91,6 +91,10 @@ if [ -z $1 ] || [ $1 == "scripts-v8" ] || [ $1 == "veda-scripts-v8" ] || [ $1 ==
     build_server_module "veda-scripts-v8"
 fi
 
+if [ -z $1 ] || [ $1 == "queue2ids" ] || [ $1 == "veda-queue2ids" ] || [ $1 == "basic" ] || [ $1 == "all" ]; then
+    build_server_module "veda-queue2ids"
+fi
+
 if [ $1 == "tools" ] || [ $1 == "veda-tools" ] || [ $1 == "all" ]; then
     build_server_module "veda-tools"
 fi
