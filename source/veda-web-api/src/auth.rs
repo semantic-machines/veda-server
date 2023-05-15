@@ -113,6 +113,10 @@ pub(crate) async fn is_ticket_valid(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
+    if params.ticket.is_none() {
+        return Ok(HttpResponse::Ok().json(false));
+    }
+
     match check_ticket(&params.ticket, &ticket_cache, &extract_addr(&req), &tt, activity_sender).await {
         Ok(user_uri) => {
             log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &user_uri, "is_ticket_valid", "", ResultCode::Ok);
