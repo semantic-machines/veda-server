@@ -8,25 +8,24 @@ mod common;
 
 use crate::auth::*;
 use crate::common::{create_sys_ticket, get_ticket_trusted, logout, read_auth_configuration, AuthConf, UserStat};
-use nng::{Message, Protocol, Socket};
+use nng::options::{Options, RecvTimeout, SendTimeout};
+use nng::{Error, Message, Protocol, Socket};
 use serde_json::json;
 use serde_json::value::Value as JSONValue;
 use std::collections::HashMap;
+use std::time::Duration;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::veda_backend::{get_storage_with_prop, Backend};
 use v_common::storage::common::{StorageMode, VStorage};
 
+const TIMEOUT_RECV: u64 = 30;
+const TIMEOUT_SEND: u64 = 60;
+
 fn main() -> std::io::Result<()> {
     init_log("AUTH");
 
     let auth_url = Module::get_property("auth_url").expect("param [auth_url] not found in veda.properties");
-
-    let server = Socket::new(Protocol::Rep0)?;
-    if let Err(e) = server.listen(&auth_url) {
-        error!("failed to listen, err = {:?}", e);
-        return Ok(());
-    }
 
     let mut backend = Backend::create(StorageMode::ReadWrite, false);
     let mut backup_storage = get_storage_with_prop(StorageMode::ReadWrite, "backup_db_connection");
@@ -44,14 +43,50 @@ fn main() -> std::io::Result<()> {
 
     let conf = read_auth_configuration(&mut backend);
 
+    let mut count = 0;
     if let Some(mut xr) = XapianReader::new("russian", &mut backend.storage) {
         loop {
-            if let Ok(recv_msg) = server.recv() {
-                let res = req_prepare(&conf, &recv_msg, &systicket, &mut xr, &mut backend, &mut backup_storage, &mut suspicious, &mut auth_data);
-                if let Err(e) = server.send(res) {
-                    error!("failed to send, err = {:?}", e);
+            info!("init");
+            let server = Socket::new(Protocol::Rep0)?;
+
+            if let Err(e) = server.set_opt::<RecvTimeout>(Some(Duration::from_secs(TIMEOUT_RECV))) {
+                error!("failed to set recv timeout, url = {}, err = {}", auth_url, e);
+                return Ok(());
+            }
+            if let Err(e) = server.set_opt::<SendTimeout>(Some(Duration::from_secs(TIMEOUT_SEND))) {
+                error!("failed to set send timeout, url = {}, err = {}", auth_url, e);
+                return Ok(());
+            }
+
+            if let Err(e) = server.listen(&auth_url) {
+                error!("failed to listen, err = {:?}", e);
+                return Ok(());
+            }
+            info!("start listen {}", auth_url);
+
+            loop {
+                match server.recv() {
+                    Ok(recv_msg) => {
+                        count += 1;
+
+                        let res = req_prepare(&conf, &recv_msg, &systicket, &mut xr, &mut backend, &mut backup_storage, &mut suspicious, &mut auth_data);
+                        if let Err(e) = server.send(res) {
+                            error!("failed to send, err = {:?}", e);
+                        }
+                    },
+                    Err(e) => match e {
+                        Error::TimedOut => {
+                            info!("receive timeout, total prepared requests: {}", count);
+                            break;
+                        },
+                        _ => {
+                            error!("failed to get request, err = {:?}", e);
+                            break;
+                        },
+                    },
                 }
             }
+            server.close();
         }
     } else {
         error!("failed to init ft-query");
