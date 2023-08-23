@@ -262,7 +262,7 @@ pub(crate) fn set_password(credential: &mut Individual, password: &str) {
     let rng = rand::SystemRandom::new();
 
     let mut salt = [0u8; CREDENTIAL_LEN];
-    if let Ok(..) = rng.fill(&mut salt) {
+    if rng.fill(&mut salt).is_ok() {
         let mut pbkdf2_hash = [0u8; CREDENTIAL_LEN];
         pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA512, n_iter, &salt, password.as_bytes(), &mut pbkdf2_hash);
 
@@ -359,7 +359,7 @@ pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration
     if !ticket.id.is_empty() && !ticket.id.is_empty() {
         ticket_indv.set_id(&ticket.id);
     } else {
-        ticket_indv.set_id(&Uuid::new_v4().to_hyphenated().to_string());
+        ticket_indv.set_id(&Uuid::new_v4().hyphenated().to_string());
     }
 
     ticket_indv.add_string("ticket:login", login, Lang::none());

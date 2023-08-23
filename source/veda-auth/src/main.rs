@@ -86,6 +86,7 @@ fn main() -> std::io::Result<()> {
                     },
                 }
             }
+            info!("close");
             server.close();
         }
     } else {
