@@ -71,15 +71,18 @@ impl App {
     }
 
     pub(crate) async fn watch_started_modules(&mut self) {
-        let mut mstorage_watchdog_check_period = None;
+        let mut watchdog_check_periods: HashMap<String, Duration> = Default::default();
+        let mut prev_check_times: HashMap<String, i64> = Default::default();
+        let mut module_check_results: HashMap<String, bool> = Default::default();
+
         if let Some(p) = Module::get_property("mstorage_watchdog_period") {
             if let Ok(t) = parse_duration::parse(&p) {
-                mstorage_watchdog_check_period = Some(t);
+                watchdog_check_periods.insert("mstorage".to_string(), t);
+                prev_check_times.insert("mstorage".to_string(), Utc::now().naive_utc().timestamp());
                 info!("started mstorage watchdog, period = {}", p);
             }
         }
 
-        let mut prev_check_mstorage = Utc::now().naive_utc().timestamp();
         loop {
             let mut new_config_modules = HashSet::new();
 
@@ -93,23 +96,23 @@ impl App {
                 new_config_modules.insert(el.to_owned());
             }
 
-            let mstorage_ready = if let Some(d) = mstorage_watchdog_check_period {
+            for (module_name, period) in &watchdog_check_periods {
                 let now = Utc::now().naive_utc().timestamp();
-                if now - prev_check_mstorage > d.as_secs() as i64 {
-                    prev_check_mstorage = now;
+                if now - *prev_check_times.get(module_name).unwrap_or(&now) > period.as_secs() as i64 {
+                    prev_check_times.insert(module_name.to_string(), now);
 
-                    if !mstorage_watchdog_check(self) {
-                        log_err_and_to_tg(&self.tg, "detected a problem in module MSTORAGE, restart all modules").await;
-                        false
-                    } else {
-                        true
+                    // логика для проверки каждого модуля
+                    if module_name == "mstorage" {
+                        let check_result = mstorage_watchdog_check(self);
+                        module_check_results.insert(module_name.to_string(), check_result);
+                        if !check_result {
+                            log_err_and_to_tg(&self.tg, "detected a problem in module MSTORAGE, restart all modules").await;
+                        }
                     }
-                } else {
-                    true
                 }
-            } else {
-                true
-            };
+            }
+
+            let mstorage_ready = *module_check_results.get("mstorage").unwrap_or(&true);
 
             let mut sys = sysinfo::System::new();
             sys.refresh_processes();
