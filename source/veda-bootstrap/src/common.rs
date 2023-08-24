@@ -37,6 +37,10 @@ pub struct TelegramDest {
     pub(crate) tg_notify_chat_id: i64,
 }
 
+pub fn auth_watchdog_check(app: &mut App) -> bool {
+    false
+}
+
 pub fn mstorage_watchdog_check(app: &mut App) -> bool {
     if app.sys_ticket.is_empty() {
         while !app.backend.mstorage_api.connect() {

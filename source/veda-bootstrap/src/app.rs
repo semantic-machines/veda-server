@@ -1,4 +1,4 @@
-use crate::common::{is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, ModuleError, TelegramDest, VedaModule};
+use crate::common::{auth_watchdog_check, is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, ModuleError, TelegramDest, VedaModule};
 use chrono::prelude::*;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
@@ -71,55 +71,76 @@ impl App {
     }
 
     pub(crate) async fn watch_started_modules(&mut self) {
+        // Инициализация хэш-карт для хранения периодов проверки, времени последней проверки и результатов проверки для каждого модуля
         let mut watchdog_check_periods: HashMap<String, Duration> = Default::default();
         let mut prev_check_times: HashMap<String, i64> = Default::default();
         let mut module_check_results: HashMap<String, bool> = Default::default();
 
-        if let Some(p) = Module::get_property("mstorage_watchdog_period") {
-            if let Ok(t) = parse_duration::parse(&p) {
-                watchdog_check_periods.insert("mstorage".to_string(), t);
-                prev_check_times.insert("mstorage".to_string(), Utc::now().naive_utc().timestamp());
-                info!("started mstorage watchdog, period = {}", p);
+        // Настройка периодов проверки для известных модулей
+        for n in ["mstorage", "auth"] {
+            if let Some(p) = Module::get_property(&format!("{}_watchdog_period", n)) {
+                if let Ok(t) = parse_duration::parse(&p) {
+                    watchdog_check_periods.insert(n.to_string(), t);
+                    prev_check_times.insert(n.to_string(), Utc::now().naive_utc().timestamp());
+                    info!("started {} watchdog, period = {}", n, p);
+                }
             }
         }
 
         loop {
             let mut new_config_modules = HashSet::new();
 
+            // Получение информации о модулях
             if let Err(e) = self.get_modules_info() {
                 if e.kind() != ErrorKind::NotFound {
                     log_err_and_to_tg(&self.tg, "failed to read modules info").await;
                 }
             }
 
+            // Добавление модулей из текущей конфигурации в набор
             for el in self.modules_start_order.iter() {
                 new_config_modules.insert(el.to_owned());
             }
 
+            // Проверка каждого модуля на основе его периода проверки
             for (module_name, period) in &watchdog_check_periods {
                 let now = Utc::now().naive_utc().timestamp();
                 if now - *prev_check_times.get(module_name).unwrap_or(&now) > period.as_secs() as i64 {
                     prev_check_times.insert(module_name.to_string(), now);
 
-                    // логика для проверки каждого модуля
-                    if module_name == "mstorage" {
-                        let check_result = mstorage_watchdog_check(self);
-                        module_check_results.insert(module_name.to_string(), check_result);
-                        if !check_result {
-                            log_err_and_to_tg(&self.tg, "detected a problem in module MSTORAGE, restart all modules").await;
+                    // Логика проверки для каждого модуля
+                    let check_result = if module_name == "mstorage" {
+                        Some(mstorage_watchdog_check(self))
+                    } else if module_name == "auth" {
+                        Some(auth_watchdog_check(self))
+                    } else {
+                        None
+                    };
+
+                    if let Some(c) = check_result {
+                        module_check_results.insert(module_name.to_string(), c);
+                        if !c {
+                            log_err_and_to_tg(&self.tg, &format!("detected a problem in module {}, restart it", module_name)).await;
                         }
                     }
                 }
             }
 
+            // Проверка готовности mstorage
             let mstorage_ready = *module_check_results.get("mstorage").unwrap_or(&true);
+            if !mstorage_ready {
+                log_err_and_to_tg(&self.tg, "detected a problem in module MSTORAGE, restart all modules").await;
+            }
 
             let mut sys = sysinfo::System::new();
             sys.refresh_processes();
+
+            // Проверка каждого запущенного процесса
             for (name, process) in self.started_modules.iter_mut() {
                 let mut need_check = true;
                 let (mut is_ok, memory) = is_ok_process(&mut sys, process.id());
 
+                // Если mstorage не готов, попытка остановить процесс
                 if !mstorage_ready && signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
                     warn!("attempt stop module {} {}", process.id(), name);
                     is_ok = false;
@@ -133,6 +154,7 @@ impl App {
                         0
                     };
 
+                    // Если процесс завершился с ошибкой, попытка его перезапустить
                     if exit_code != ModuleError::Fatal as i32 {
                         log_err_and_to_tg(&self.tg, &format!("found dead module {} {}, exit code = {}, restart this", process.id(), name, exit_code)).await;
 
@@ -156,6 +178,8 @@ impl App {
                         }
                     }
                 }
+
+                // Проверка ограничений по памяти и таймауту для каждого модуля
                 if let Some(module) = self.modules_info.get_mut(name) {
                     if need_check {
                         if let Some(memory_limit) = module.memory_limit {
@@ -203,6 +227,7 @@ impl App {
                 new_config_modules.remove(name);
             }
 
+            // Запуск новых модулей из конфигурации
             for name in new_config_modules {
                 if let Some(module) = self.modules_info.get(&name) {
                     match start_module(module).await {
@@ -217,6 +242,7 @@ impl App {
                 }
             }
 
+            // Задержка перед следующей итерацией цикла
             thread::sleep(time::Duration::from_millis(10000));
         }
     }
