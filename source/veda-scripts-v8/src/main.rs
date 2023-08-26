@@ -9,10 +9,10 @@ use std::sync::Mutex;
 use std::{env, thread, time};
 use v_v8::callback::*;
 use v_v8::common::{is_filter_pass, HashVec, ScriptInfo, ScriptInfoContext};
-use v_v8::v8::Isolate;
 use v_v8::scripts_workplace::ScriptsWorkPlace;
 use v_v8::session_cache::{commit, CallbackSharedData, Transaction};
 use v_v8::v8;
+use v_v8::v8::Isolate;
 use v_v8::v_common::ft_xapian::xapian_reader::XapianReader;
 use v_v8::v_common::module::common::load_onto;
 use v_v8::v_common::module::info::ModuleInfo;
@@ -47,8 +47,8 @@ impl Drop for SetupGuard {
 fn setup() -> SetupGuard {
     static START: std::sync::Once = std::sync::Once::new();
     START.call_once(|| {
-        assert!(v8::icu::set_common_data_71(align_data::include_aligned!(align_data::Align16, "third_party/icu/common/icudtl.dat")).is_ok());
-        v8::V8::initialize_platform(v8::new_default_platform(0,false).make_shared());
+        assert!(v8::icu::set_common_data_73(align_data::include_aligned!(align_data::Align16, "third_party/icu/common/icudtl.dat")).is_ok());
+        v8::V8::initialize_platform(v8::new_default_platform(0, false).make_shared());
         v8::V8::initialize();
     });
     SetupGuard {}
@@ -210,10 +210,10 @@ fn prepare(_module: &mut Backend, ctx: &mut MyContext, queue_element: &mut Indiv
                 error!("failed to write module_info, op_id = {}, err = {:?}", op_id, e);
                 return Err(PrepareError::Fatal);
             }
-        }
+        },
         Err(e) => {
             return Err(e);
-        }
+        },
     }
     Ok(true)
 }
