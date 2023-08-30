@@ -2,7 +2,9 @@ use crate::app::App;
 use chrono::prelude::*;
 use std::fs::File;
 use std::io::Write;
+use std::net::IpAddr;
 use std::process::{Child, Command};
+use std::str::FromStr;
 use std::{fs, io, thread, time};
 use sysinfo::{ProcessExt, ProcessStatus, SystemExt};
 use teloxide::prelude::*;
@@ -39,13 +41,8 @@ pub struct TelegramDest {
 }
 
 pub fn auth_watchdog_check(app: &mut App) -> bool {
-    while !app.backend.auth_api.connect() {
-        info!("waiting for auth module start...");
-        thread::sleep(std::time::Duration::from_millis(100));
-    }
-
     // PING (use function logout)
-    if let Err(e) = app.backend.auth_api.logout(&None, None) {
+    if let Err(e) = app.backend.auth_api.logout(&None, Some(IpAddr::from_str("127.0.0.1").unwrap())) {
         if e.result == ResultCode::AuthenticationFailed {
             return true;
         }
