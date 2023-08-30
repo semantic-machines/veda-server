@@ -10,6 +10,7 @@ use teloxide::types::Recipient;
 use v_common::module::info::ModuleInfo;
 use v_common::onto::individual::Individual;
 use v_common::v_api::api_client::IndvOp;
+use v_common::v_api::obj::ResultCode;
 
 pub const MSTORAGE_ID: i64 = 1;
 
@@ -38,30 +39,33 @@ pub struct TelegramDest {
 }
 
 pub fn auth_watchdog_check(app: &mut App) -> bool {
+    while !app.backend.auth_api.connect() {
+        info!("waiting for auth module start...");
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // PING (use function logout)
+    if let Err(e) = app.backend.auth_api.logout(&None, None) {
+        if e.result == ResultCode::AuthenticationFailed {
+            return true;
+        }
+    }
     false
 }
 
 pub fn mstorage_watchdog_check(app: &mut App) -> bool {
-    if app.sys_ticket.is_empty() {
-        while !app.backend.mstorage_api.connect() {
-            info!("waiting for main module start...");
-            thread::sleep(std::time::Duration::from_millis(100));
-        }
+    let sys_ticket = app.get_sys_ticket().to_string();
 
-        let mut systicket = app.backend.get_sys_ticket_id();
-        while systicket.is_err() {
-            info!("waiting for systicket...");
-            thread::sleep(std::time::Duration::from_millis(100));
-            systicket = app.backend.get_sys_ticket_id();
-        }
-        app.sys_ticket = systicket.unwrap();
+    while !app.backend.mstorage_api.connect() {
+        info!("waiting for main module start...");
+        thread::sleep(std::time::Duration::from_millis(100));
     }
 
     let test_indv_id = "cfg:watchdog_test";
     let mut test_indv = Individual::default();
     test_indv.set_id(test_indv_id);
     test_indv.set_uri("rdf:type", "v-s:resource");
-    if app.backend.mstorage_api.update_use_param(&app.sys_ticket, "", "", MSTORAGE_ID, IndvOp::Put, &test_indv).is_err() {
+    if app.backend.mstorage_api.update_use_param(&sys_ticket, "", "", MSTORAGE_ID, IndvOp::Put, &test_indv).is_err() {
         error!("failed to store test individual, uri = {}", test_indv_id);
         return false;
     }

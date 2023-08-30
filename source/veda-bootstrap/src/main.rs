@@ -6,7 +6,6 @@ use crate::common::{log_err_and_to_tg, TelegramDest};
 use chrono::prelude::*;
 use env_logger::Builder;
 use log::LevelFilter;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::process;
@@ -36,16 +35,9 @@ async fn main() {
         .init();
 
     info!("app dir = {}", app_dir);
-    let mut app = App {
-        date_changed_modules_info: None,
-        app_dir,
-        modules_info: HashMap::new(),
-        modules_start_order: vec![],
-        started_modules: vec![],
-        backend: Default::default(),
-        sys_ticket: "".to_string(),
-        tg: None,
-    };
+    let mut app = App::new();
+
+    app.app_dir = app_dir;
 
     if let (Some(v), Some(t)) = (Module::get_property("tg_notify_chat_id"), Module::get_property("tg_notify_token")) {
         if let Ok(d) = v.parse::<i64>() {
