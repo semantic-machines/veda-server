@@ -1,6 +1,6 @@
 [package]
 name = "veda-scripts-v8"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["itiu <ValeriyBushenev@gmail.com>"]
 edition = "2021"
 
