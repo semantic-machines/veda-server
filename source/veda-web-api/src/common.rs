@@ -333,6 +333,13 @@ async fn read_ticket_obj(ticket_id: &str, db: &AStorage) -> Result<Ticket, Resul
             ticket_obj.result = ResultCode::Ok;
         }
     }
+    if let Some(lmdb) = &db.lmdb {
+        let mut to = Individual::default();
+        if lmdb.lock().await.get_individual_from_db(StorageId::Tickets, ticket_id, &mut to) {
+            ticket_obj.update_from_individual(&mut to);
+            ticket_obj.result = ResultCode::Ok;
+        }
+    }
     if ticket_obj.result != ResultCode::Ok {
         return Err(ResultCode::TicketNotFound);
     }
@@ -366,10 +373,12 @@ pub(crate) fn db_connector(tt_config: &Option<ClientConfig>) -> AStorage {
     if let Some(cfg) = &tt_config {
         AStorage {
             tt: Some(cfg.clone().build()),
+            lmdb: None,
         }
     } else {
         AStorage {
             tt: None,
+            lmdb: Some(Mutex::from(LMDBStorage::new(BASE_PATH, StorageMode::ReadOnly, Some(1000)))),
         }
     }
 }
