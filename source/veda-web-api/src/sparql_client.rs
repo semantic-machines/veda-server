@@ -3,10 +3,12 @@ use actix_web::web;
 use awc::Client;
 use serde_json::{json, Value};
 use std::io::Error;
+use std::time::Instant;
+use stopwatch::Stopwatch;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::module_impl::Module;
 use v_common::onto::{XSD_BOOLEAN, XSD_DATE_TIME, XSD_DECIMAL, XSD_DOUBLE, XSD_FLOAT, XSD_INT, XSD_INTEGER, XSD_LONG, XSD_NORMALIZED_STRING, XSD_STRING};
-use v_common::search::common::{get_short_prefix, split_full_prefix, PrefixesCache, QueryResult};
+use v_common::search::common::{get_short_prefix, load_prefixes, split_full_prefix, PrefixesCache, QueryResult};
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext};
@@ -28,7 +30,13 @@ impl Default for SparqlClient {
 }
 
 impl SparqlClient {
-    pub(crate) async fn query_select_ids(&mut self, user_uri: &str, query: String, _db: web::Data<AStorage>, prefix_cache: web::Data<PrefixesCache>) -> QueryResult {
+    pub(crate) async fn query_select_ids(&mut self, user_uri: &str, query: String, db: web::Data<AStorage>, prefix_cache: web::Data<PrefixesCache>) -> QueryResult {
+        let total_time = Instant::now();
+
+        if prefix_cache.full2short_r.is_empty() {
+            load_prefixes(&db, &prefix_cache).await;
+        }
+
         let res_req =
             self.client.post(&self.point).header("Content-Type", "application/sparql-query").header("Accept", "application/sparql-results+json").send_body(query).await;
 
@@ -45,27 +53,39 @@ impl SparqlClient {
                     debug!("vars:{var:?}");
 
                     qres.count = v.results.bindings.len() as i64;
+
+                    qres.result_code = ResultCode::Ok;
+
+                    let mut auth_sw = Stopwatch::new();
                     for el in v.results.bindings {
                         let r = &el[var];
                         if r["type"] == "uri" {
                             if let Some(v) = r["value"].as_str() {
                                 let iri = split_full_prefix(v);
-                                let prefix = get_short_prefix(iri.0, &prefix_cache);
+
+                                let fullprefix = iri.0;
+                                let prefix = get_short_prefix(&fullprefix, &prefix_cache);
                                 let short_iri = format!("{prefix}:{}", iri.1);
 
-                                if self.az.authorize(&short_iri, user_uri, Access::CanRead as u8, true).unwrap_or(0) != Access::CanRead as u8 {
+                                auth_sw.start();
+                                if self.az.authorize(&short_iri, user_uri, Access::CanRead as u8, true).unwrap_or(0) == Access::CanRead as u8 {
                                     qres.result.push(short_iri);
                                 }
+                                auth_sw.stop();
                             }
                         }
                     }
                     qres.processed = qres.result.len() as i64;
+                    qres.authorize_time = auth_sw.elapsed_ms();
                 },
                 Err(e) => {
                     error!("{:?}", e);
                 },
             }
         }
+
+        qres.total_time = total_time.elapsed().as_millis() as i64;
+        qres.query_time = qres.total_time - qres.authorize_time;
 
         qres
     }
