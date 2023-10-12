@@ -18,6 +18,7 @@ use v_common::module::module_impl::Module;
 use v_common::module::veda_backend::Backend;
 
 pub struct App {
+    pub(crate) name: String,
     pub(crate) date_changed_modules_info: Option<SystemTime>,
     pub(crate) app_dir: String,
     pub(crate) modules_info: HashMap<String, VedaModule>,
@@ -31,6 +32,7 @@ pub struct App {
 impl App {
     pub(crate) fn new() -> Self {
         App {
+            name: "VEDA".to_string(),
             date_changed_modules_info: None,
             app_dir: "".to_string(),
             modules_info: HashMap::new(),

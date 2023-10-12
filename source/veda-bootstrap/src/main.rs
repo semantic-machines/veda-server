@@ -2,7 +2,7 @@
 extern crate log;
 
 use crate::app::App;
-use crate::common::{log_err_and_to_tg, TelegramDest};
+use crate::common::{log_err_and_to_tg, log_info_and_to_tg, TelegramDest};
 use chrono::prelude::*;
 use env_logger::Builder;
 use log::LevelFilter;
@@ -39,11 +39,16 @@ async fn main() {
 
     app.app_dir = app_dir;
 
+    if let Some(n) = Module::get_property("name") {
+        app.name = n;
+    }
+
     if let (Some(v), Some(t)) = (Module::get_property("tg_notify_chat_id"), Module::get_property("tg_notify_token")) {
         if let Ok(d) = v.parse::<i64>() {
             app.tg = Some(TelegramDest {
                 tg_notify_token: t,
                 tg_notify_chat_id: d,
+                sender_name: app.name.clone(),
             });
         }
     } else {
@@ -76,6 +81,8 @@ async fn main() {
     if started.is_err() {
         log_err_and_to_tg(&app.tg, &format!("failed to start veda, err = {:?}", &started.err())).await;
         return;
+    } else {
+        log_info_and_to_tg(&app.tg, "✅ successfully start").await;
     }
 
     if let Ok(mut file) = File::create(".pids/__".to_owned() + "bootstrap-pid") {

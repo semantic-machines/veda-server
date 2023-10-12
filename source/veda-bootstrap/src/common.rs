@@ -6,6 +6,8 @@ use std::net::IpAddr;
 use std::process::{Child, Command};
 use std::str::FromStr;
 use std::{fs, io, thread, time};
+use std::time::Duration;
+use reqwest::Client;
 use sysinfo::{ProcessExt, ProcessStatus, SystemExt};
 use teloxide::prelude::*;
 use teloxide::types::Recipient;
@@ -38,6 +40,7 @@ pub struct VedaModule {
 pub struct TelegramDest {
     pub(crate) tg_notify_token: String,
     pub(crate) tg_notify_chat_id: i64,
+    pub(crate) sender_name: String,
 }
 
 pub fn auth_watchdog_check(app: &mut App) -> bool {
@@ -87,12 +90,24 @@ pub async fn log_err_and_to_tg(tg: &Option<TelegramDest>, text: &str) {
     send_msg_to_tg(tg, &format!("ERROR: {}", text)).await;
 }
 
+pub async fn log_info_and_to_tg(tg: &Option<TelegramDest>, text: &str) {
+    info!("{}", text);
+    send_msg_to_tg(tg, text).await;
+}
+
 pub async fn send_msg_to_tg(tg: &Option<TelegramDest>, text: &str) {
     if let Some(t) = tg {
-        let bot = Bot::new(t.tg_notify_token.to_owned()).auto_send();
+        // Create a custom reqwest Client with a timeout
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))  // Set timeout to 30 seconds
+            .build()
+            .unwrap();
+
+        // Create a new Bot instance with the custom reqwest Client
+        let bot = Bot::with_client(t.tg_notify_token.to_owned(), client);
         let chat_id = Recipient::Id(ChatId(t.tg_notify_chat_id));
 
-        if let Err(e) = bot.send_message(chat_id, text).await {
+        if let Err(e) = bot.send_message(chat_id, format!("|{}| {}", t.sender_name, text)).await {
             error!("fail send message to telegram: err={:?}", e);
         }
     }
