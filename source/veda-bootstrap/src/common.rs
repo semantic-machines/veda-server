@@ -1,13 +1,13 @@
 use crate::app::App;
 use chrono::prelude::*;
+use reqwest::Client;
 use std::fs::File;
 use std::io::Write;
 use std::net::IpAddr;
 use std::process::{Child, Command};
 use std::str::FromStr;
-use std::{fs, io, thread, time};
 use std::time::Duration;
-use reqwest::Client;
+use std::{fs, io, thread, time};
 use sysinfo::{ProcessExt, ProcessStatus, SystemExt};
 use teloxide::prelude::*;
 use teloxide::types::Recipient;
@@ -37,6 +37,7 @@ pub struct VedaModule {
     pub(crate) module_info: Option<ModuleInfo>,
 }
 
+#[derive(Clone)]
 pub struct TelegramDest {
     pub(crate) tg_notify_token: String,
     pub(crate) tg_notify_chat_id: i64,
@@ -87,7 +88,7 @@ pub fn is_ok_process(sys: &mut sysinfo::System, pid: u32) -> (bool, u64) {
 
 pub async fn log_err_and_to_tg(tg: &Option<TelegramDest>, text: &str) {
     error!("{}", text);
-    send_msg_to_tg(tg, &format!("ERROR: {}", text)).await;
+    send_msg_to_tg(tg, &format!("🔴 {}", text)).await;
 }
 
 pub async fn log_info_and_to_tg(tg: &Option<TelegramDest>, text: &str) {
@@ -99,7 +100,7 @@ pub async fn send_msg_to_tg(tg: &Option<TelegramDest>, text: &str) {
     if let Some(t) = tg {
         // Create a custom reqwest Client with a timeout
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))  // Set timeout to 30 seconds
+            .timeout(Duration::from_secs(30)) // Set timeout to 30 seconds
             .build()
             .unwrap();
 

@@ -1,4 +1,4 @@
-use crate::common::{auth_watchdog_check, is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, ModuleError, TelegramDest, VedaModule};
+use crate::common::{auth_watchdog_check, is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, TelegramDest, VedaModule};
 use chrono::prelude::*;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
@@ -9,31 +9,31 @@ use std::io::{BufRead, BufReader};
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 use std::process::Child;
-use std::time::Duration;
 use std::time::SystemTime;
-use std::{io, thread, time};
+use std::time::{Duration, UNIX_EPOCH};
+use std::{fs, io, thread, time};
 use sysinfo::SystemExt;
-use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::Module;
 use v_common::module::veda_backend::Backend;
 
 pub struct App {
     pub(crate) name: String,
-    pub(crate) date_changed_modules_info: Option<SystemTime>,
     pub(crate) app_dir: String,
+    pub(crate) time_changed_modules_info: Option<SystemTime>,
     pub(crate) modules_info: HashMap<String, VedaModule>,
     pub(crate) modules_start_order: Vec<String>,
     pub(crate) started_modules: Vec<(String, Child)>,
     pub(crate) backend: Backend,
     sys_ticket: String,
-    pub(crate) tg: Option<TelegramDest>,
+    tg: Option<TelegramDest>,
+    time_changed_properties: Option<SystemTime>,
 }
 
 impl App {
     pub(crate) fn new() -> Self {
         App {
             name: "VEDA".to_string(),
-            date_changed_modules_info: None,
+            time_changed_modules_info: None,
             app_dir: "".to_string(),
             modules_info: HashMap::new(),
             modules_start_order: vec![],
@@ -41,7 +41,32 @@ impl App {
             backend: Default::default(),
             sys_ticket: "".to_string(),
             tg: None,
+            time_changed_properties: None,
         }
+    }
+
+    pub(crate) fn get_tg_dest(&mut self) -> Option<TelegramDest> {
+        match self.properties_were_modified() {
+            Ok(were_modified) => {
+                if were_modified {
+                    let chat_id_opt = self.get_property("tg_notify_chat_id").and_then(|v| v.parse::<i64>().ok());
+                    let token_opt = self.get_property("tg_notify_token");
+
+                    if let (Some(chat_id), Some(token)) = (chat_id_opt, token_opt) {
+                        self.tg = Some(TelegramDest {
+                            tg_notify_token: token,
+                            tg_notify_chat_id: chat_id,
+                            sender_name: self.name.clone(),
+                        });
+                    } else {
+                        warn!("sending notifications to Telegram is not available.");
+                    }
+                }
+            },
+            Err(e) => error!("{:?}", e),
+        }
+
+        self.tg.clone()
     }
 
     pub(crate) async fn start_modules(&mut self) -> io::Result<()> {
@@ -128,100 +153,6 @@ impl App {
         }
     }
 
-    // Проверка каждого запущенного процесса
-    async fn check_started_processes(&mut self, mstorage_ready: bool, new_config_modules: &mut HashSet<String>) {
-        let mut sys = sysinfo::System::new();
-        sys.refresh_processes();
-
-        for (name, process) in self.started_modules.iter_mut() {
-            let mut need_check = true;
-            let (mut is_ok, memory) = is_ok_process(&mut sys, process.id());
-
-            if !mstorage_ready && signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                warn!("attempt stop module {} {}", process.id(), name);
-                is_ok = false;
-            }
-
-            debug!("name={}, memory={}", name, memory);
-            if !is_ok {
-                let exit_code = if let Ok(c) = process.wait() {
-                    c.code().unwrap_or_default()
-                } else {
-                    0
-                };
-
-                if exit_code != ModuleError::Fatal as i32 {
-                    log_err_and_to_tg(&self.tg, &format!("found dead module {} {}, exit code = {}, restart this", process.id(), name, exit_code)).await;
-
-                    if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                        warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
-                    }
-
-                    if let Some(module) = self.modules_info.get(name) {
-                        match start_module(module).await {
-                            Ok(child) => {
-                                info!("{} restart module {}, {}, {:?}", child.id(), module.alias_name, module.exec_name, module.args);
-                                *process = child;
-                                need_check = false;
-                            },
-                            Err(e) => {
-                                log_err_and_to_tg(&self.tg, &format!("failed to execute, name = {}, err = {:?}", module.exec_name, e)).await;
-                            },
-                        }
-                    } else {
-                        log_err_and_to_tg(&self.tg, &format!("failed to find module, name = {}", name)).await;
-                    }
-                }
-            }
-
-            if let Some(module) = self.modules_info.get_mut(name) {
-                if need_check {
-                    if let Some(memory_limit) = module.memory_limit {
-                        if memory > memory_limit {
-                            warn!("process = {}, memory = {} KiB, limit = {} KiB", name, memory, memory_limit);
-                            if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                                warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
-                            }
-                        }
-                    }
-
-                    if let Some(timeout) = module.watchdog_timeout {
-                        if module.module_info.is_none() {
-                            match ModuleInfo::new("./data", &module.alias_name, false) {
-                                Ok(m) => {
-                                    module.module_info = Some(m);
-                                },
-                                Err(e) => {
-                                    error!("fail open info file {}, err={:?}", module.alias_name, e)
-                                },
-                            }
-                        }
-
-                        if let Some(m) = &module.module_info {
-                            if let Ok(tm) = m.read_modified() {
-                                if tm + Duration::from_secs(timeout) < SystemTime::now() {
-                                    let now: DateTime<Utc> = SystemTime::now().into();
-                                    let a: DateTime<Utc> = (tm + Duration::from_secs(timeout)).into();
-                                    warn!("watchdog: modified + timeout ={},  now={}", a.format("%d/%m/%Y %T"), now.format("%d/%m/%Y %T"));
-                                    if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                                        warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                info!("process {} does not exist in the configuration, it will be killed", name);
-                if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                    warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
-                }
-            }
-
-            new_config_modules.remove(name);
-        }
-    }
-
     // Запуск новых модулей из конфигурации
     async fn start_new_modules_from_config(&mut self, new_config_modules: &HashSet<String>) {
         for name in new_config_modules {
@@ -271,12 +202,30 @@ impl App {
         }
     }
 
+    pub(crate) fn properties_were_modified(&mut self) -> Result<bool, io::Error> {
+        let f = "./veda.properties";
+        let metadata = fs::metadata(f)?;
+        let modified_time = metadata.modified()?;
+        let last_known_modification = self.time_changed_properties.unwrap_or(UNIX_EPOCH);
+
+        if modified_time > last_known_modification {
+            self.time_changed_properties = Some(modified_time);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub(crate) fn get_property(&mut self, prop_name: &str) -> Option<String> {
+        Module::get_property(prop_name)
+    }
+
     pub(crate) fn get_modules_info(&mut self) -> io::Result<()> {
         let f = File::open("veda.modules")?;
         let file = &mut BufReader::new(&f);
         let cur_modifed_date = f.metadata()?.modified()?;
 
-        if let Some(d) = self.date_changed_modules_info {
+        if let Some(d) = self.time_changed_modules_info {
             if d == cur_modifed_date {
                 return Err(Error::new(ErrorKind::NotFound, ""));
             }
@@ -284,7 +233,7 @@ impl App {
 
         info!("reading modules configuration...");
         self.modules_info.clear();
-        self.date_changed_modules_info = Some(cur_modifed_date);
+        self.time_changed_modules_info = Some(cur_modifed_date);
         let mut order = 0;
 
         while let Some(l) = file.lines().next() {

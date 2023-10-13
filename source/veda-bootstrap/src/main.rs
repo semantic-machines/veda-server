@@ -2,7 +2,7 @@
 extern crate log;
 
 use crate::app::App;
-use crate::common::{log_err_and_to_tg, log_info_and_to_tg, TelegramDest};
+use crate::common::{log_err_and_to_tg, log_info_and_to_tg};
 use chrono::prelude::*;
 use env_logger::Builder;
 use log::LevelFilter;
@@ -10,9 +10,9 @@ use std::fs::File;
 use std::io::Write;
 use std::process;
 use sysinfo::{get_current_pid, ProcessExt, SystemExt};
-use v_common::module::module_impl::Module;
 
 mod app;
+mod check;
 mod common;
 
 #[tokio::main]
@@ -39,21 +39,11 @@ async fn main() {
 
     app.app_dir = app_dir;
 
-    if let Some(n) = Module::get_property("name") {
-        app.name = n;
+    if let Some(n) = app.get_property("name") {
+        app.name = n.to_string();
     }
 
-    if let (Some(v), Some(t)) = (Module::get_property("tg_notify_chat_id"), Module::get_property("tg_notify_token")) {
-        if let Ok(d) = v.parse::<i64>() {
-            app.tg = Some(TelegramDest {
-                tg_notify_token: t,
-                tg_notify_chat_id: d,
-                sender_name: app.name.clone(),
-            });
-        }
-    } else {
-        warn!("sending notifications to Telegram is not available.");
-    }
+    app.get_tg_dest();
 
     if let Err(e) = app.get_modules_info() {
         error!("failed to read modules info, err = {:?}", e);
@@ -79,10 +69,10 @@ async fn main() {
 
     let started = app.start_modules().await;
     if started.is_err() {
-        log_err_and_to_tg(&app.tg, &format!("failed to start veda, err = {:?}", &started.err())).await;
+        log_err_and_to_tg(&app.get_tg_dest(), &format!("failed to start veda, err = {:?}", &started.err())).await;
         return;
     } else {
-        log_info_and_to_tg(&app.tg, "✅ successfully start").await;
+        log_info_and_to_tg(&app.get_tg_dest(), "✅ successfully start").await;
     }
 
     if let Ok(mut file) = File::create(".pids/__".to_owned() + "bootstrap-pid") {
