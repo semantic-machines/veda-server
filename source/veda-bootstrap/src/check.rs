@@ -1,8 +1,6 @@
 use crate::app::App;
-use crate::common::{is_ok_process, log_err_and_to_tg, start_module, ModuleError};
+use crate::common::{is_ok_process, log_err_and_to_tg, start_module, stop_process, ModuleError};
 use chrono::prelude::*;
-use nix::sys::signal::{self, Signal};
-use nix::unistd::Pid;
 use std::collections::HashSet;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -20,8 +18,8 @@ impl App {
             let mut need_check = true;
             let (mut is_ok, memory) = is_ok_process(&mut sys, process.id());
 
-            if !mstorage_ready && signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                warn!("attempt stop module {} {}", process.id(), name);
+            if !mstorage_ready && stop_process(process.id() as i32, name) {
+                warn!("mstorage not ready, attempt stop module {} {}", process.id(), name);
                 is_ok = false;
             }
 
@@ -34,13 +32,16 @@ impl App {
                 };
 
                 if exit_code != ModuleError::Fatal as i32 {
-                    error!("found dead module {} {}, exit code = {}, restart this", process.id(), name, exit_code);
-
-                    if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                        warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
+                    if let Some(module) = self.modules_info.get(name) {
+                        if *module.prev_err.as_ref().unwrap_or(&ModuleError::Fatal) != ModuleError::MemoryLimit {
+                            log_err_and_to_tg(&tg, &format!("found dead module {}, restart this", name)).await;
+                        }
                     }
 
-                    if let Some(module) = self.modules_info.get(name) {
+                    error!("found dead module {} {}, exit code = {}, restart this", process.id(), name, exit_code);
+                    stop_process(process.id() as i32, name);
+
+                    if let Some(module) = self.modules_info.get_mut(name) {
                         match start_module(module).await {
                             Ok(child) => {
                                 info!("{} restart module {}, {}, {:?}", child.id(), module.alias_name, module.exec_name, module.args);
@@ -62,9 +63,8 @@ impl App {
                     if let Some(memory_limit) = module.memory_limit {
                         if memory > memory_limit {
                             warn!("process = {}, memory = {} KiB, limit = {} KiB", name, memory, memory_limit);
-                            if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                                warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
-                            }
+                            stop_process(process.id() as i32, name);
+                            module.prev_err = Some(ModuleError::MemoryLimit);
                         }
                     }
 
@@ -86,9 +86,7 @@ impl App {
                                     let now: DateTime<Utc> = SystemTime::now().into();
                                     let a: DateTime<Utc> = (tm + Duration::from_secs(timeout)).into();
                                     warn!("watchdog: modified + timeout ={},  now={}", a.format("%d/%m/%Y %T"), now.format("%d/%m/%Y %T"));
-                                    if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                                        warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
-                                    }
+                                    stop_process(process.id() as i32, name);
                                 }
                             }
                         }
@@ -96,9 +94,7 @@ impl App {
                 }
             } else {
                 info!("process {} does not exist in the configuration, it will be killed", name);
-                if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                    warn!("attempt to stop module, process = {}, name = {}", process.id(), name);
-                }
+                stop_process(process.id() as i32, name);
             }
 
             new_config_modules.remove(name);

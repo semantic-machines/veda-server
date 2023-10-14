@@ -1,5 +1,7 @@
 use crate::app::App;
 use chrono::prelude::*;
+use nix::sys::signal::{self, Signal};
+use nix::unistd::Pid;
 use reqwest::Client;
 use std::fs::File;
 use std::io::Write;
@@ -18,11 +20,11 @@ use v_common::v_api::obj::ResultCode;
 
 pub const MSTORAGE_ID: i64 = 1;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[repr(u8)]
 pub enum ModuleError {
     Fatal = 101,
-    //Recoverable = 102,
+    MemoryLimit = 102,
 }
 
 #[derive(Debug)]
@@ -35,6 +37,7 @@ pub struct VedaModule {
     pub(crate) order: u32,
     pub(crate) watchdog_timeout: Option<u64>,
     pub(crate) module_info: Option<ModuleInfo>,
+    pub(crate) prev_err: Option<ModuleError>,
 }
 
 #[derive(Clone)]
@@ -114,7 +117,7 @@ pub async fn send_msg_to_tg(tg: &Option<TelegramDest>, text: &str) {
     }
 }
 
-pub async fn start_module(module: &VedaModule) -> io::Result<Child> {
+pub async fn start_module(module: &mut VedaModule) -> io::Result<Child> {
     let datetime: DateTime<Local> = Local::now();
 
     fs::create_dir_all("./logs").unwrap_or_default();
@@ -153,8 +156,19 @@ pub async fn start_module(module: &VedaModule) -> io::Result<Child> {
             if module.alias_name == "mstorage" {
                 thread::sleep(time::Duration::from_millis(100));
             }
+            module.prev_err = None;
             Ok(p)
         },
         Err(e) => Err(e),
+    }
+}
+
+// Метод для остановки процесса по его имени и идентификатору
+pub fn stop_process(process_id: i32, process_name: &str) -> bool {
+    if signal::kill(Pid::from_raw(process_id), Signal::SIGTERM).is_ok() {
+        warn!("attempt to stop module, process = {}, name = {}", process_id, process_name);
+        true
+    } else {
+        false
     }
 }

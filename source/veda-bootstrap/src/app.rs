@@ -1,7 +1,5 @@
-use crate::common::{auth_watchdog_check, is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, TelegramDest, VedaModule};
+use crate::common::{auth_watchdog_check, is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, stop_process, TelegramDest, VedaModule};
 use chrono::prelude::*;
-use nix::sys::signal::{self, Signal};
-use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
@@ -72,7 +70,7 @@ impl App {
     pub(crate) async fn start_modules(&mut self) -> io::Result<()> {
         for name in self.modules_start_order.iter() {
             //info!("start {:?}", module);
-            let module = self.modules_info.get(name).unwrap();
+            let module = self.modules_info.get_mut(name).unwrap();
             match start_module(module).await {
                 Ok(child) => {
                     info!("pid = {}", child.id());
@@ -99,9 +97,7 @@ impl App {
 
         if success_started < self.started_modules.len() {
             for (name, process) in self.started_modules.iter_mut() {
-                if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                    warn!("stop process {} {}", process.id(), name);
-                }
+                stop_process(process.id() as i32, name);
             }
 
             return Err(Error::new(ErrorKind::Other, "failed to start"));
@@ -145,9 +141,7 @@ impl App {
                     log_err_and_to_tg(&self.tg, &format!("fail ping to module {}, restart it", module_name)).await;
                     let mut sys = sysinfo::System::new();
                     sys.refresh_processes();
-                    if signal::kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).is_ok() {
-                        warn!("attempt stop module {} {}", process.id(), module_name);
-                    }
+                    stop_process(process.id() as i32, module_name);
                 }
             }
         }
@@ -156,7 +150,7 @@ impl App {
     // Запуск новых модулей из конфигурации
     async fn start_new_modules_from_config(&mut self, new_config_modules: &HashSet<String>) {
         for name in new_config_modules {
-            if let Some(module) = self.modules_info.get(name) {
+            if let Some(module) = self.modules_info.get_mut(name) {
                 match start_module(module).await {
                     Ok(child) => {
                         info!("{} start module {}, {}, {:?}", child.id(), module.alias_name, module.exec_name, module.args);
@@ -269,6 +263,7 @@ impl App {
                     watchdog_timeout: None,
                     module_info: None,
                     module_name: String::new(),
+                    prev_err: None,
                 };
                 order += 1;
 
