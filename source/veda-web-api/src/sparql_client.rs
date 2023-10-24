@@ -152,7 +152,7 @@ impl SparqlClient {
                                         error!("unknown type: {:?}", r_type.as_str());
                                     },
                                 }
-                                warn!("type={r_type:?}, value={r_data}");
+                                debug!("type={r_type:?}, value={r_data}");
                             }
                         }
                         jrows.push(jrow);

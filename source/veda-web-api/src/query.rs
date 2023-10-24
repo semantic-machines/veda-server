@@ -121,7 +121,7 @@ async fn stored_query(
                 match source.as_str() {
                     "clickhouse" => {
                         if let Ok(sql) = prepare_sql_with_params(&query_string, &mut params, &source) {
-                            warn!("{sql}");
+                            debug!("{sql}");
                             let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, &format).await?;
                             log(Some(&start_time), &uinf, "stored_query", stored_query_id, ResultCode::Ok);
                             return Ok(HttpResponse::Ok().json(res));
@@ -133,7 +133,7 @@ async fn stored_query(
                         }
 
                         if let Ok(sparql) = prepare_sparql_params(&query_string, &mut params, &prefix_cache) {
-                            warn!("{sparql}");
+                            debug!("{sparql}");
                             let res = query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, &format, prefix_cache).await?;
                             log(Some(&start_time), &uinf, "stored_query", stored_query_id, ResultCode::Ok);
                             return Ok(HttpResponse::Ok().json(res));

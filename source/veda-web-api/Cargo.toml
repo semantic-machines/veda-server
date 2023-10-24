@@ -23,7 +23,7 @@ rmp-serialize = "0.8.0"
 chrono = "0.4"
 num = "0.2.1"
 num-traits = "0.2.11"
-rust_decimal = "=1.12.3"
+rust_decimal = "=1.32.0"
 bincode = "1.2.1"
 derivative = "2.1.1"
 log = "0.4"
@@ -44,5 +44,5 @@ num_cpus = "1.13.1"
 regex = "1.7.1"
 stopwatch = "0.0.7"
 
-v_common = { package = "v-common", version = "=0.4.55" }
+v_common = { package = "v-common", version = "=0.4.57" }
 #v_common = { package = "v-common", path = "../../../v-common" }
