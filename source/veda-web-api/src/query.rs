@@ -38,7 +38,7 @@ pub(crate) async fn query_post(
     prefix_cache: web::Data<PrefixesCache>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let uinf = match get_user_info(get_ticket(&req, &params.ticket), &req, &ticket_cache, &db, activity_sender).await {
+    let uinf = match get_user_info(get_ticket(&req, &params.ticket), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             return Ok(HttpResponse::new(StatusCode::from_u16(res as u16).unwrap()));
@@ -60,7 +60,7 @@ pub(crate) async fn query_get(
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let uinf = match get_user_info(data.ticket.clone(), &req, &ticket_cache, &db, activity_sender).await {
+    let uinf = match get_user_info(data.ticket.clone(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             return Ok(HttpResponse::new(StatusCode::from_u16(res as u16).unwrap()));
