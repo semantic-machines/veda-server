@@ -24,10 +24,7 @@ use crate::sparql_client::SparqlClient;
 use crate::update::{add_to_individual, put_individual, put_individuals, remove_from_individual, remove_individual, set_in_individual};
 use crate::user_activity::user_activity_manager;
 use crate::vql_query_client::VQLHttpClient;
-use crate::webdav::{
-    handle_webdav_get, handle_webdav_head, handle_webdav_lock, handle_webdav_options, handle_webdav_propfind0, handle_webdav_propfind1, handle_webdav_proppatch,
-    handle_webdav_put, handle_webdav_unlock,
-};
+use crate::webdav::{handle_webdav_get, handle_webdav_head, handle_webdav_lock, handle_webdav_options_2, handle_webdav_options_3, handle_webdav_propfind0, handle_webdav_propfind1, handle_webdav_proppatch, handle_webdav_put, handle_webdav_unlock};
 use actix_files::{Files, NamedFile};
 use actix_web::http::Method;
 use actix_web::rt::System;
@@ -243,22 +240,12 @@ async fn main() -> std::io::Result<()> {
                     .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind0))
                     .route(web::route().method(m_proppatch.clone()).to(handle_webdav_proppatch))
                     .route(web::route().method(m_lock.clone()).to(handle_webdav_lock))
-                    .route(web::route().method(m_unlock.clone()).to(handle_webdav_unlock)),
+                    .route(web::route().method(m_unlock.clone()).to(handle_webdav_unlock))
+                    .route(web::route().method(m_options.clone()).to(handle_webdav_options_3))
             )
-            .service(
-                web::resource("/webdav/{ticket_id}/{file_id}/{file_name}")
-                    .route(web::put().to(handle_webdav_put))
-                    .route(web::get().to(handle_webdav_get))
-                    .route(web::head().to(handle_webdav_head))
-                    .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind0))
-                    .route(web::route().method(m_proppatch.clone()).to(handle_webdav_proppatch))
-                    .route(web::route().method(m_lock.clone()).to(handle_webdav_lock))
-                    .route(web::route().method(m_unlock.clone()).to(handle_webdav_unlock)),
-            )
-            .service(web::resource("/webdav/{ticket_id}/{file_id}/").route(web::route().method(m_options.clone()).to(handle_webdav_options)))
             .service(
                 web::resource("/webdav/{ticket_id}/{file_id}")
-                    .route(web::route().method(m_options.clone()).to(handle_webdav_options))
+                    .route(web::route().method(m_options.clone()).to(handle_webdav_options_2))
                     .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind1)),
             )
             .service(Files::new("/", "./public").redirect_to_slash_directory().index_file("index.html"))

@@ -56,7 +56,7 @@ pub(crate) async fn handle_webdav_put(
     }
 }
 
-pub(crate) async fn handle_webdav_options(
+pub(crate) async fn handle_webdav_options_2(
     path: web::Path<(String, String)>,
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
@@ -65,6 +65,29 @@ pub(crate) async fn handle_webdav_options(
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id) = path.into_inner();
+    handle_webdav_options(ticket, file_id, req, ticket_cache, db, az, activity_sender).await
+}
+pub(crate) async fn handle_webdav_options_3(
+    path: web::Path<(String, String, String)>,
+    req: HttpRequest,
+    ticket_cache: web::Data<UserContextCache>,
+    db: web::Data<AStorage>,
+    az: web::Data<Mutex<LmdbAzContext>>,
+    activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+) -> io::Result<HttpResponse> {
+    let (ticket, file_id, _) = path.into_inner();
+    handle_webdav_options(ticket, file_id, req, ticket_cache, db, az, activity_sender).await
+}
+
+async fn handle_webdav_options(
+    ticket: String,
+    file_id: String,
+    req: HttpRequest,
+    ticket_cache: web::Data<UserContextCache>,
+    db: web::Data<AStorage>,
+    az: web::Data<Mutex<LmdbAzContext>>,
+    activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+) -> io::Result<HttpResponse> {
 
     let uinf = match get_user_info(Some(ticket), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
