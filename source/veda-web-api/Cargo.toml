@@ -50,5 +50,5 @@ mime_guess = "2.0"
 content_inspector = "0.2"
 chardetng = "0.1"
 
-#v_common = { package = "v-common", version = "=0.4.57" }
-v_common = { package = "v-common", path = "../../../v-common" }
+v_common = { package = "v-common", version = "=0.4.58" }
+#v_common = { package = "v-common", path = "../../../v-common" }
