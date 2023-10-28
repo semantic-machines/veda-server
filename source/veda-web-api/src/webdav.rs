@@ -88,7 +88,6 @@ async fn handle_webdav_options(
     az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-
     let uinf = match get_user_info(Some(ticket), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
@@ -144,7 +143,7 @@ async fn handle_webdav_propfind(
     return Ok(res_multistatus(&to_dav_xml(&file_item)));
 }
 
-pub(crate) async fn handle_webdav_propfind0(
+pub(crate) async fn handle_webdav_propfind_3(
     path: web::Path<(String, String, String)>,
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
@@ -156,7 +155,7 @@ pub(crate) async fn handle_webdav_propfind0(
     handle_webdav_propfind(ticket, file_id, req, ticket_cache, db, az, activity_sender).await
 }
 
-pub(crate) async fn handle_webdav_propfind1(
+pub(crate) async fn handle_webdav_propfind_2(
     path: web::Path<(String, String)>,
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,

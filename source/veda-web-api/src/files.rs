@@ -31,7 +31,13 @@ use v_common::v_authorization::common::{Access, AuthorizationContext};
 const FILE_BASE_PATH: &str = "./data/files";
 
 pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mutex<LmdbAzContext>) -> Result<FileItem, ResultCode> {
-    let (mut file_info, res_code) = get_individual_from_db(file_id, &uinf.user_id, &db, Some(&az)).await?;
+    let file_id = if !file_id.contains(':') {
+        file_id.replacen('_', ":", 1)
+    } else {
+        file_id.to_string()
+    };
+
+    let (mut file_info, res_code) = get_individual_from_db(&file_id, &uinf.user_id, &db, Some(&az)).await?;
 
     if res_code != ResultCode::Ok {
         //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res_code);
