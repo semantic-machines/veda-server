@@ -41,6 +41,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
+use actix_web::middleware::normalize::TrailingSlash;
 use url::Url;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
@@ -179,6 +180,7 @@ async fn main() -> std::io::Result<()> {
         let m_unlock = Method::from_bytes(b"UNLOCK").unwrap();
 
         App::new()
+            .wrap(middleware::NormalizePath::new(TrailingSlash::Trim))
             .wrap(middleware::Compress::default())
             .wrap(
                 middleware::DefaultHeaders::new()
@@ -247,7 +249,7 @@ async fn main() -> std::io::Result<()> {
                     .route(web::route().method(m_options.clone()).to(handle_webdav_options_3)),
             )
             .service(
-                web::resource("/webdav/{ticket_id}/{file_id}/")
+                web::resource("/webdav/{ticket_id}/{file_id}")
                     .route(web::route().method(m_options.clone()).to(handle_webdav_options_2))
                     .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_2)),
             )
