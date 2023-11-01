@@ -25,23 +25,25 @@ use crate::update::{add_to_individual, put_individual, put_individuals, remove_f
 use crate::user_activity::user_activity_manager;
 use crate::vql_query_client::VQLHttpClient;
 use crate::webdav::{
-    handle_webdav_get, handle_webdav_head, handle_webdav_lock, handle_webdav_options_2, handle_webdav_options_3, handle_webdav_propfind_2, handle_webdav_propfind_3,
-    handle_webdav_proppatch, handle_webdav_put, handle_webdav_unlock,
+    handle_webdav_get_2, handle_webdav_get_3, handle_webdav_head, handle_webdav_lock, handle_webdav_options_2, handle_webdav_options_3, handle_webdav_propfind_2,
+    handle_webdav_propfind_3, handle_webdav_proppatch, handle_webdav_put, handle_webdav_unlock,
 };
 use actix_files::{Files, NamedFile};
-use actix_web::http::Method;
+use actix_web::dev::{Factory, Service, ServiceRequest, ServiceResponse};
+use actix_web::http::{Method, StatusCode};
+use actix_web::middleware::normalize::TrailingSlash;
+use actix_web::middleware::Logger;
 use actix_web::rt::System;
-use actix_web::{get, head, middleware, web, App, HttpResponse, HttpServer};
+use actix_web::{error, get, guard, head, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use futures::channel::mpsc;
 use futures::lock::Mutex;
-use futures::{select, FutureExt};
+use futures::{select, FutureExt, Sink};
 use rusty_tarantool::tarantool::ClientConfig;
 use serde_derive::Deserialize;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
-use actix_web::middleware::normalize::TrailingSlash;
 use url::Url;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
@@ -181,6 +183,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(middleware::NormalizePath::new(TrailingSlash::Trim))
+            .wrap(Logger::default())
             .wrap(middleware::Compress::default())
             .wrap(
                 middleware::DefaultHeaders::new()
@@ -240,7 +243,7 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::resource("/webdav/{ticket_id}/{file_id}/{file_name}")
                     .route(web::put().to(handle_webdav_put))
-                    .route(web::get().to(handle_webdav_get))
+                    .route(web::get().to(handle_webdav_get_3))
                     .route(web::head().to(handle_webdav_head))
                     .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_3))
                     .route(web::route().method(m_proppatch.clone()).to(handle_webdav_proppatch))
@@ -250,6 +253,7 @@ async fn main() -> std::io::Result<()> {
             )
             .service(
                 web::resource("/webdav/{ticket_id}/{file_id}")
+                    .route(web::get().to(handle_webdav_get_2))
                     .route(web::route().method(m_options.clone()).to(handle_webdav_options_2))
                     .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_2)),
             )
