@@ -29,15 +29,14 @@ use crate::webdav::{
     handle_webdav_propfind_3, handle_webdav_proppatch, handle_webdav_put, handle_webdav_unlock,
 };
 use actix_files::{Files, NamedFile};
-use actix_web::dev::{Factory, Service, ServiceRequest, ServiceResponse};
-use actix_web::http::{Method, StatusCode};
+use actix_web::http::Method;
 use actix_web::middleware::normalize::TrailingSlash;
 use actix_web::middleware::Logger;
 use actix_web::rt::System;
-use actix_web::{error, get, guard, head, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{get, head, middleware, web, App, HttpResponse, HttpServer};
 use futures::channel::mpsc;
 use futures::lock::Mutex;
-use futures::{select, FutureExt, Sink};
+use futures::{select, FutureExt};
 use rusty_tarantool::tarantool::ClientConfig;
 use serde_derive::Deserialize;
 use std::env;

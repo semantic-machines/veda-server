@@ -1,5 +1,5 @@
 use crate::common::{get_user_info, UserContextCache, UserId};
-use crate::files::{get_file, put_file, to_file_item, FileItem};
+use crate::files::{get_file, put_file, to_file_item, update_lock_info, update_unlock_info, FileItem};
 use actix_multipart::Multipart;
 use actix_web::body::Body;
 use actix_web::dev::HttpResponseBuilder;
@@ -18,6 +18,8 @@ use mime::Mime;
 use std::sync::Arc;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::storage::async_storage::AStorage;
+use v_common::v_api::api_client::MStorageClient;
+use v_common::v_api::obj::ResultCode;
 use xml::escape::escape_str_pcdata;
 
 pub(crate) async fn handle_webdav_put(
@@ -203,6 +205,7 @@ pub(crate) async fn handle_webdav_lock(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     az: web::Data<Mutex<LmdbAzContext>>,
+    mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id, _file_name) = path.into_inner();
@@ -219,6 +222,10 @@ pub(crate) async fn handle_webdav_lock(
         Ok(file_item) => file_item,
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
+
+    if update_lock_info(&file_item, uinf, mstorage).await.result != ResultCode::Ok {
+        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
+    }
 
     let token = Utc::now().timestamp().to_string();
     let xml_body = format!(
@@ -238,6 +245,7 @@ pub(crate) async fn handle_webdav_unlock(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     az: web::Data<Mutex<LmdbAzContext>>,
+    mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id, _file_name) = path.into_inner();
@@ -254,6 +262,10 @@ pub(crate) async fn handle_webdav_unlock(
         Ok(file_item) => file_item,
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
+
+    if update_unlock_info(&file_item, uinf, mstorage).await.result != ResultCode::Ok {
+        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
+    }
 
     Ok(HttpResponse::new(StatusCode::OK))
 }

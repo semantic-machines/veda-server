@@ -13,7 +13,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use async_std::fs as async_fs;
 use async_std::io;
 use async_std::path::Path;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use filetime::FileTime;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
@@ -24,11 +24,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_common::onto::individual::Individual;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
+use v_common::v_api::api_client::{IndvOp, MStorageClient, OpResult};
 use v_common::v_api::obj::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext};
 
 const FILE_BASE_PATH: &str = "./data/files";
+const LOCK_TIMEOUT: u32 = 3600;
 
 pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mutex<LmdbAzContext>) -> Result<FileItem, ResultCode> {
     let file_id = if !file_id.contains(':') {
@@ -43,6 +46,13 @@ pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mu
         //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res_code);
         return Err(res_code);
     }
+
+    let locked_by = file_info.get_first_literal("v-s:lockedBy");
+    let locked_date = if let Some(d) = file_info.get_first_datetime("v-s:lockedDate") {
+        Some(DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(d, 0).ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid timestamp"))?, Utc))
+    } else {
+        None
+    };
 
     let path = file_info.get_first_literal_or_err("v-s:filePath")?;
     let uri = file_info.get_first_literal_or_err("v-s:fileUri")?;
@@ -74,6 +84,8 @@ pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mu
         size: size,
         last_modified: last_modified,
         original_name: original_file_name,
+        locked_by,
+        locked_date,
     })
 }
 
@@ -85,6 +97,8 @@ pub struct FileItem {
     pub(crate) size: u64,
     pub(crate) last_modified: DateTime<Utc>,
     pub(crate) original_name: String,
+    pub(crate) locked_by: Option<String>,
+    pub(crate) locked_date: Option<DateTime<Utc>>,
 }
 
 #[get("/files/{file_id}")]
@@ -125,6 +139,10 @@ pub async fn get_file(
         Ok(file_item) => file_item,
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
+
+    if check_lock(&file_item) {
+        return Ok(HttpResponse::new(StatusCode::LOCKED));
+    }
 
     let file_full_name = format!("{}/{}/{}", FILE_BASE_PATH, file_item.path, sanitize_filename::sanitize(&file_item.id));
     let file_ds = NamedFile::open(&file_full_name)?;
@@ -359,4 +377,39 @@ async fn store_payload_to_file(mut payload: Multipart, path: &str, file_name: &s
     } else {
         Ok(None)
     }
+}
+
+fn check_lock(fi: &FileItem) -> bool {
+    if let Some(locked_date) = fi.locked_date {
+        let now = Utc::now();
+
+        if now < locked_date + Duration::seconds(LOCK_TIMEOUT as i64) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> OpResult {
+    let mut ms = mstorage.lock().await;
+
+    let mut indv = Individual::default();
+    indv.set_id(&fi.id);
+    indv.set_datetime("v-s:lockedDate", Utc::now().naive_utc().timestamp());
+    indv.set_uri("v-s:lockedBy", &uinf.user_id);
+
+    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::RemoveFrom, &indv)
+}
+
+pub async fn update_lock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> OpResult {
+    let mut ms = mstorage.lock().await;
+
+    let mut indv = Individual::default();
+    indv.set_id(&fi.id);
+    indv.set_datetime("v-s:lockedDate", Utc::now().naive_utc().timestamp());
+    indv.set_uri("v-s:lockedBy", &uinf.user_id);
+
+    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv)
 }
