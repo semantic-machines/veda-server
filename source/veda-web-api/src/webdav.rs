@@ -371,7 +371,7 @@ fn res_multistatus(content: &str) -> HttpResponse {
 }
 
 async fn set_webdav_headers(res: &mut HttpResponseBuilder) {
-    res.header(HeaderName::from_static("allow"), HeaderValue::from_static("GET,HEAD,PUT,OPTIONS,DELETE,PROPFIND,COPY,MOVE"))
+    res.header(HeaderName::from_static("allow"), HeaderValue::from_static("GET,HEAD,PUT,OPTIONS,PROPFIND,PROPPATCH,LOCK,UNLOCK"))
         .header(HeaderName::from_static("dav"), HeaderValue::from_static("1,2"));
 }
 

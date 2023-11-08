@@ -31,7 +31,7 @@ use v_common::v_api::obj::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext};
 
 const FILE_BASE_PATH: &str = "./data/files";
-const LOCK_TIMEOUT: u32 = 3600;
+const LOCK_TIMEOUT: i64 = 3600;
 
 pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mutex<LmdbAzContext>) -> Result<FileItem, ResultCode> {
     let file_id = if !file_id.contains(':') {
@@ -140,7 +140,7 @@ pub async fn get_file(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    if check_lock(&file_item) {
+    if is_locked(&file_item) {
         return Ok(HttpResponse::new(StatusCode::LOCKED));
     }
 
@@ -379,15 +379,13 @@ async fn store_payload_to_file(mut payload: Multipart, path: &str, file_name: &s
     }
 }
 
-fn check_lock(fi: &FileItem) -> bool {
+fn is_locked(fi: &FileItem) -> bool {
     if let Some(locked_date) = fi.locked_date {
-        let now = Utc::now();
-
-        if now < locked_date + Duration::seconds(LOCK_TIMEOUT as i64) {
-            return false;
+        return if Utc::now() < locked_date {
+            false
         } else {
-            return true;
-        }
+            true
+        };
     }
     false
 }
@@ -408,7 +406,7 @@ pub async fn update_lock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data
 
     let mut indv = Individual::default();
     indv.set_id(&fi.id);
-    indv.set_datetime("v-s:lockedDate", Utc::now().naive_utc().timestamp());
+    indv.set_datetime("v-s:lockedDate", Utc::now().naive_utc().timestamp() + Duration::seconds(LOCK_TIMEOUT));
     indv.set_uri("v-s:lockedBy", &uinf.user_id);
 
     ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv)
