@@ -208,9 +208,9 @@ pub(crate) async fn handle_webdav_lock(
     mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, _file_name) = path.into_inner();
+    let (ticket, file_id, file_name) = path.into_inner();
 
-    let uinf = match get_user_info(Some(ticket), &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(Some(ticket.clone()), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res);
@@ -227,13 +227,13 @@ pub(crate) async fn handle_webdav_lock(
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
     }
 
-    let file_item_id = file_item.info_id;
+    let lockroot = format!("/webdav/{}/{file_id}/{file_name}", &ticket);
     let token = Utc::now().timestamp().to_string();
     let xml_body = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock>
 <D:locktoken><D:href>{token}</D:href></D:locktoken>
-<D:lockroot><D:href>{file_item_id}</D:href></D:lockroot>
+<D:lockroot><D:href>{lockroot}</D:href></D:lockroot>
 </D:activelock></D:lockdiscovery></D:prop>"#,
     );
 
