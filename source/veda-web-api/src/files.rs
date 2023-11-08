@@ -406,7 +406,7 @@ pub async fn update_lock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data
 
     let mut indv = Individual::default();
     indv.set_id(&fi.id);
-    indv.set_datetime("v-s:lockedDate", Utc::now().naive_utc().timestamp() + Duration::seconds(LOCK_TIMEOUT));
+    indv.set_datetime("v-s:lockedDate", (Utc::now().naive_utc() + Duration::seconds(LOCK_TIMEOUT)).timestamp());
     indv.set_uri("v-s:lockedBy", &uinf.user_id);
 
     ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv)
