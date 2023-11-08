@@ -33,14 +33,14 @@ use v_common::v_authorization::common::{Access, AuthorizationContext};
 const FILE_BASE_PATH: &str = "./data/files";
 const LOCK_TIMEOUT: i64 = 3600;
 
-pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mutex<LmdbAzContext>) -> Result<FileItem, ResultCode> {
-    let file_id = if !file_id.contains(':') {
-        file_id.replacen('_', ":", 1)
+pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az: &Mutex<LmdbAzContext>) -> Result<FileItem, ResultCode> {
+    let file_info_id = if !file_info_id.contains(':') {
+        file_info_id.replacen('_', ":", 1)
     } else {
-        file_id.to_string()
+        file_info_id.to_string()
     };
 
-    let (mut file_info, res_code) = get_individual_from_db(&file_id, &uinf.user_id, &db, Some(&az)).await?;
+    let (mut file_info, res_code) = get_individual_from_db(&file_info_id, &uinf.user_id, &db, Some(&az)).await?;
 
     if res_code != ResultCode::Ok {
         //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res_code);
@@ -78,6 +78,7 @@ pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mu
     //.to_rfc2822()
     let size = file_info.get_first_integer("v-s:fileSize").unwrap_or_default() as u64;
     Ok(FileItem {
+        info_id: file_info_id,
         id: uri,
         path: path,
         mime: Some(file_mime),
@@ -91,7 +92,8 @@ pub async fn to_file_item(uinf: &UserInfo, file_id: &str, db: &AStorage, az: &Mu
 
 #[derive(Debug, Default)]
 pub struct FileItem {
-    pub(crate) id: String,
+    pub(crate) info_id: String,
+    id: String,
     path: String,
     mime: Option<mime::Mime>,
     pub(crate) size: u64,
@@ -394,7 +396,7 @@ pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Da
     let mut ms = mstorage.lock().await;
 
     let mut indv = Individual::default();
-    indv.set_id(&fi.id);
+    indv.set_id(&fi.info_id);
     indv.set_datetime("v-s:lockedDate", Utc::now().naive_utc().timestamp());
     indv.set_uri("v-s:lockedBy", &uinf.user_id);
 
@@ -405,7 +407,7 @@ pub async fn update_lock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data
     let mut ms = mstorage.lock().await;
 
     let mut indv = Individual::default();
-    indv.set_id(&fi.id);
+    indv.set_id(&fi.info_id);
     indv.set_datetime("v-s:lockedDate", (Utc::now().naive_utc() + Duration::seconds(LOCK_TIMEOUT)).timestamp());
     indv.set_uri("v-s:lockedBy", &uinf.user_id);
 

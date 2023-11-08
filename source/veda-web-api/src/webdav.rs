@@ -227,12 +227,13 @@ pub(crate) async fn handle_webdav_lock(
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
     }
 
+    let file_item_id = file_item.info_id;
     let token = Utc::now().timestamp().to_string();
     let xml_body = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock>
 <D:locktoken><D:href>{token}</D:href></D:locktoken>
-<D:lockroot><D:href>{file_id}</D:href></D:lockroot>
+<D:lockroot><D:href>{file_item_id}</D:href></D:lockroot>
 </D:activelock></D:lockdiscovery></D:prop>"#,
     );
 
@@ -316,7 +317,7 @@ fn file_item_to_dav_xml(fitem: &FileItem, ticket: String) -> String {
         LocalResult::Single(v) => v.to_rfc2822(),
         _ => String::new(),
     };
-    let href = encode_uri(&format!("/webdav/{}/{}/{}", ticket, fitem.id.replace(':', "_"), &fitem.original_name));
+    let href = encode_uri(&format!("/webdav/{}/{}/{}", ticket, fitem.info_id, &fitem.original_name));
     let displayname = escape_str_pcdata(&fitem.original_name);
     format!(
         r#"<D:response>
@@ -339,8 +340,7 @@ fn file_id_to_dav_xml(fitem: &FileItem, ticket: String) -> String {
         LocalResult::Single(v) => v.to_rfc2822(),
         _ => String::new(),
     };
-    let href = encode_uri(&format!("/webdav/{}/{}/", ticket, fitem.id.replace(':', "_")));
-    let displayname = fitem.id.replace(':', "_");
+    let href = encode_uri(&format!("/webdav/{}/{}/", ticket, fitem.info_id));
     format!(
         r#"<D:response>
 <D:href>{}</D:href>
@@ -353,7 +353,7 @@ fn file_id_to_dav_xml(fitem: &FileItem, ticket: String) -> String {
 <D:status>HTTP/1.1 200 OK</D:status>
 </D:propstat>
 </D:response>"#,
-        href, displayname, mtime
+        href, fitem.info_id, mtime
     )
 }
 
