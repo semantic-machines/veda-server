@@ -143,11 +143,11 @@ async fn handle_webdav_propfind(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    if is_file {
-        return Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket)));
+    return if is_file {
+        Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket)))
     } else {
-        return Ok(res_multistatus(&file_id_to_dav_xml(&file_item, ticket)));
-    }
+        Ok(res_multistatus(&file_id_to_dav_xml(&file_item, ticket)))
+    };
 }
 
 pub(crate) async fn handle_webdav_propfind_3(
@@ -317,7 +317,7 @@ fn file_item_to_dav_xml(fitem: &FileItem, ticket: String) -> String {
         LocalResult::Single(v) => v.to_rfc2822(),
         _ => String::new(),
     };
-    let href = encode_uri(&format!("/webdav/{}/{}/{}", ticket, fitem.info_id, &fitem.original_name));
+    let href = encode_uri(&format!("/webdav/{}/{}/{}", ticket, fitem.info_id.replace(':', "_"), &fitem.original_name));
     let displayname = escape_str_pcdata(&fitem.original_name);
     format!(
         r#"<D:response>
@@ -340,7 +340,7 @@ fn file_id_to_dav_xml(fitem: &FileItem, ticket: String) -> String {
         LocalResult::Single(v) => v.to_rfc2822(),
         _ => String::new(),
     };
-    let href = encode_uri(&format!("/webdav/{}/{}/", ticket, fitem.info_id));
+    let href = encode_uri(&format!("/webdav/{}/{}/{}", ticket, fitem.info_id.replace(':', "_"), fitem.original_name));
     format!(
         r#"<D:response>
 <D:href>{}</D:href>
@@ -353,7 +353,7 @@ fn file_id_to_dav_xml(fitem: &FileItem, ticket: String) -> String {
 <D:status>HTTP/1.1 200 OK</D:status>
 </D:propstat>
 </D:response>"#,
-        href, fitem.info_id, mtime
+        href, fitem.original_name, mtime
     )
 }
 
