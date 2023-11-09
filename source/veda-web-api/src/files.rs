@@ -13,7 +13,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use async_std::fs as async_fs;
 use async_std::io;
 use async_std::path::Path;
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc, TimeZone};
 use filetime::FileTime;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
@@ -404,7 +404,7 @@ pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Da
 
     let mut indv = Individual::default();
     indv.set_id(&fi.info_id);
-    indv.set_datetime("v-s:lockedDateTo", Utc::now().naive_utc().timestamp());
+    indv.set_datetime("v-s:lockedDateTo", Utc.timestamp(0, 0).timestamp());
 
     ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv).result
 }
