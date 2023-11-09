@@ -1,5 +1,5 @@
 use crate::common::{get_user_info, UserContextCache, UserId};
-use crate::files::{get_file, put_file, to_file_item, update_lock_info, update_unlock_info, FileItem};
+use crate::files::{get_file, is_locked, put_file, to_file_item, update_lock_info, update_unlock_info, FileItem};
 use actix_multipart::Multipart;
 use actix_web::body::Body;
 use actix_web::dev::HttpResponseBuilder;
@@ -223,12 +223,19 @@ pub(crate) async fn handle_webdav_lock(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    if update_lock_info(&file_item, uinf, mstorage).await.result != ResultCode::Ok {
+    if update_lock_info(&file_item, uinf, mstorage).await != ResultCode::Ok {
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
     }
 
     let lockroot = format!("/webdav/{}/{file_id}/{file_name}", &ticket);
-    let token = Utc::now().timestamp().to_string();
+    let token = match req.headers().get("if") {
+        Some(header_value) => {
+            let value = header_value.to_str().unwrap_or("");
+            let trimmed = &value[2..value.len() - 2];
+            trimmed.to_owned()
+        },
+        None => Utc::now().timestamp().to_string(),
+    };
     let xml_body = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock>
@@ -264,7 +271,7 @@ pub(crate) async fn handle_webdav_unlock(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    if update_unlock_info(&file_item, uinf, mstorage).await.result != ResultCode::Ok {
+    if update_unlock_info(&file_item, uinf, mstorage).await != ResultCode::Ok {
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
     }
 

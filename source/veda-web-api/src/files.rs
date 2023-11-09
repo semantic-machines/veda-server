@@ -48,7 +48,7 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
     }
 
     let locked_by = file_info.get_first_literal("v-s:lockedBy");
-    let locked_date = if let Some(d) = file_info.get_first_datetime("v-s:lockedDate") {
+    let locked_date = if let Some(d) = file_info.get_first_datetime("v-s:lockedDateTo") {
         Some(DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(d, 0).ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid timestamp"))?, Utc))
     } else {
         None
@@ -381,7 +381,7 @@ async fn store_payload_to_file(mut payload: Multipart, path: &str, file_name: &s
     }
 }
 
-fn is_locked(fi: &FileItem) -> bool {
+pub fn is_locked(fi: &FileItem) -> bool {
     if let Some(locked_date) = fi.locked_date {
         return if Utc::now() < locked_date {
             false
@@ -392,24 +392,29 @@ fn is_locked(fi: &FileItem) -> bool {
     false
 }
 
-pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> OpResult {
+pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> ResultCode {
     let mut ms = mstorage.lock().await;
 
     let mut indv = Individual::default();
     indv.set_id(&fi.info_id);
-    indv.set_datetime("v-s:lockedDate", Utc::now().naive_utc().timestamp());
+    indv.set_datetime("v-s:lockedDateTo", Utc::now().naive_utc().timestamp());
     indv.set_uri("v-s:lockedBy", &uinf.user_id);
 
-    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::RemoveFrom, &indv)
+    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::RemoveFrom, &indv).result
 }
 
-pub async fn update_lock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> OpResult {
+pub async fn update_lock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> ResultCode {
+    if let Some(locked_date) = fi.locked_date {
+        if Utc::now() - (locked_date - Duration::seconds(LOCK_TIMEOUT)) < Duration::seconds(300) {
+            return ResultCode::Ok;
+        }
+    }
     let mut ms = mstorage.lock().await;
 
     let mut indv = Individual::default();
     indv.set_id(&fi.info_id);
-    indv.set_datetime("v-s:lockedDate", (Utc::now().naive_utc() + Duration::seconds(LOCK_TIMEOUT)).timestamp());
+    indv.set_datetime("v-s:lockedDateTo", (Utc::now().naive_utc() + Duration::seconds(LOCK_TIMEOUT)).timestamp());
     indv.set_uri("v-s:lockedBy", &uinf.user_id);
 
-    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv)
+    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv).result
 }
