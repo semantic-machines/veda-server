@@ -458,13 +458,26 @@ fn build_lock_response(token: &str, ticket: &str, file_id: &str, file_name: &str
 }
 
 async fn extract_token_from_header(req: &HttpRequest) -> Option<Option<String>> {
-    req.headers().get("if").map(|header_value| {
-        header_value.to_str().ok().and_then(|value| {
-            if value.len() >= 4 {
-                Some(value[2..value.len() - 2].to_owned())
-            } else {
-                None
-            }
+    req.headers()
+        .get("if")
+        .map(|header_value| {
+            header_value.to_str().ok().and_then(|value| {
+                if value.len() >= 4 {
+                    Some(value[2..value.len() - 2].to_owned())
+                } else {
+                    None
+                }
+            })
         })
-    })
+        .or_else(|| {
+            req.headers().get("lock-token").map(|header_value| {
+                header_value.to_str().ok().and_then(|value| {
+                    if value.starts_with('<') && value.ends_with('>') {
+                        Some(value[1..value.len() - 1].to_owned())
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
 }
