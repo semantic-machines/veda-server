@@ -399,7 +399,7 @@ async fn store_payload_to_file(mut payload: Multipart, path: &str, file_name: &s
 
 pub fn is_locked(fi: &FileItem) -> bool {
     if let Some(locked) = &fi.locked {
-        return if Utc::now() < locked.date {
+        return if Utc::now() > locked.date {
             false
         } else {
             true
