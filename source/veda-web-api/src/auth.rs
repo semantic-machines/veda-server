@@ -36,7 +36,7 @@ pub(crate) async fn get_ticket_trusted(
         user_id: String::new(),
     };
 
-    if let Err(e) = check_ticket(&Some(params.ticket.clone()), &ticket_cache, &uinf.addr, &tt, activity_sender).await {
+    if let Err(e) = check_ticket(&Some(params.ticket.clone()), &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
         log(Some(&start_time), &uinf, "get_ticket_trusted", &format!("login={:?}, ip={:?}", params.login, params.ip), e);
         return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap()));
     }
@@ -79,7 +79,7 @@ pub(crate) async fn logout(
         user_id: String::new(),
     };
 
-    match check_ticket(&params.ticket, &ticket_cache, &uinf.addr, &tt, activity_sender).await {
+    match check_ticket(&params.ticket, &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
         Ok(_user_uri) => {
             return match auth.lock().await.logout(&params.ticket, uinf.addr) {
                 Ok(r) => {
@@ -117,7 +117,7 @@ pub(crate) async fn is_ticket_valid(
         return Ok(HttpResponse::Ok().json(false));
     }
 
-    match check_ticket(&params.ticket, &ticket_cache, &extract_addr(&req), &tt, activity_sender).await {
+    match check_ticket(&params.ticket, &ticket_cache, &extract_addr(&req), &tt, &activity_sender).await {
         Ok(user_uri) => {
             log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &user_uri, "is_ticket_valid", "", ResultCode::Ok);
             Ok(HttpResponse::Ok().json(true))
@@ -198,7 +198,7 @@ pub(crate) async fn get_rights(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
-    let mut uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, activity_sender).await {
+    let mut uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             log_w(Some(&start_time), &params.ticket, &extract_addr(&req), "", "get_rights", "", res);
@@ -240,7 +240,7 @@ pub(crate) async fn get_membership(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
-    let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, activity_sender).await {
+    let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             log_w(Some(&start_time), &params.ticket, &extract_addr(&req), "", "get_membership", "", res);
@@ -290,7 +290,7 @@ pub(crate) async fn get_rights_origin(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
-    let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, activity_sender).await {
+    let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             log_w(Some(&start_time), &params.ticket, &extract_addr(&req), "", "get_rights_origin", "", res);

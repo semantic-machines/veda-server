@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::common::{extract_addr, get_user_info, log, log_w, TicketRequest, UserContextCache, UserId};
 use actix_web::http::StatusCode;
 use actix_web::{put, web, HttpRequest, HttpResponse};
@@ -28,7 +30,7 @@ pub(crate) async fn update(
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
-    let uinf = match get_user_info(params.ticket.clone(), &request, &ticket_cache, &db, activity_sender).await {
+    let uinf = match get_user_info(params.ticket.clone(), &request, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             log_w(Some(&start_time), &params.ticket, &extract_addr(&request), "", action, "", res);

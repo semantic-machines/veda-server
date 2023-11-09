@@ -70,7 +70,7 @@ pub async fn get_user_info(
     req: &HttpRequest,
     ticket_cache: &web::Data<UserContextCache>,
     db: &AStorage,
-    activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    activity_sender: &Arc<Mutex<Sender<UserId>>>,
 ) -> Result<UserInfo, ResultCode> {
     let ticket_id = if in_ticket.is_some() {
         in_ticket
@@ -251,7 +251,7 @@ pub(crate) async fn check_ticket(
     user_context_cache: &UserContextCache,
     addr: &Option<IpAddr>,
     db: &AStorage,
-    activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    activity_sender: &Arc<Mutex<Sender<UserId>>>,
 ) -> Result<String, ResultCode> {
     if w_ticket_id.is_none() {
         return Ok("cfg:Guest".to_owned());
@@ -298,7 +298,7 @@ pub(crate) async fn check_ticket(
     user_id
 }
 
-async fn send_user_activity(activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>, user_id: &str) {
+async fn send_user_activity(activity_sender: &Arc<Mutex<Sender<UserId>>>, user_id: &str) {
     {
         let mut sender = activity_sender.lock().await;
         sender.send(user_id.to_string()).await.unwrap();

@@ -64,7 +64,7 @@ impl SparqlClient {
                                 let iri = split_full_prefix(v);
 
                                 let fullprefix = iri.0;
-                                let prefix = get_short_prefix(&fullprefix, &prefix_cache);
+                                let prefix = get_short_prefix(fullprefix, &prefix_cache);
                                 let short_iri = format!("{prefix}:{}", iri.1);
 
                                 auth_sw.start();
