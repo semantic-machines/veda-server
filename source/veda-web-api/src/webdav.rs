@@ -245,6 +245,10 @@ pub(crate) async fn handle_webdav_lock(
             // Update lock request
             if let Some(locked) = &file_item.locked {
                 if locked.id == in_token {
+                    if !is_locked(&file_item) {
+                        // Update lock after lock is expired
+                        return error_response(ResultCode::BadRequest);
+                    };
                     match update_lock_info(&in_token, &file_item, uinf, mstorage).await {
                         ResultCode::Ok => Ok(build_lock_response(&in_token, &ticket, &file_id, &file_name)),
                         _ => error_response(ResultCode::InternalServerError),
