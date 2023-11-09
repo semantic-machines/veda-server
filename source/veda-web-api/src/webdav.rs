@@ -117,7 +117,7 @@ pub(crate) async fn handle_webdav_head(
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id, _file_name) = path.into_inner();
-    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, true, header::DispositionType::Inline).await
+    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, true, header::DispositionType::Inline, true).await
 }
 
 async fn handle_webdav_propfind(
@@ -223,28 +223,52 @@ pub(crate) async fn handle_webdav_lock(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    if update_lock_info(&file_item, uinf, mstorage).await != ResultCode::Ok {
-        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
-    }
+    let token_in_request = req.headers().get("if").map(|header_value| {
+        header_value.to_str().ok().and_then(|value| {
+            if value.len() >= 4 {
+                Some(value[2..value.len() - 2].to_owned())
+            } else {
+                None
+            }
+        })
+    });
 
-    let lockroot = format!("/webdav/{}/{file_id}/{file_name}", &ticket);
-    let token = match req.headers().get("if") {
-        Some(header_value) => {
-            let value = header_value.to_str().unwrap_or("");
-            let trimmed = &value[2..value.len() - 2];
-            trimmed.to_owned()
+    match token_in_request {
+        None => {
+            // First lock request
+            return if is_locked(&file_item) {
+                error_response(ResultCode::Locked)
+            } else {
+                let token = Utc::now().timestamp().to_string();
+                match update_lock_info(&token, &file_item, uinf, mstorage).await {
+                    ResultCode::Ok => Ok(build_lock_response(&token, &ticket, &file_id, &file_name)),
+                    _ => error_response(ResultCode::InternalServerError),
+                }
+            };
         },
-        None => Utc::now().timestamp().to_string(),
-    };
-    let xml_body = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock>
-<D:locktoken><D:href>{token}</D:href></D:locktoken>
-<D:lockroot><D:href>{lockroot}</D:href></D:lockroot>
-</D:activelock></D:lockdiscovery></D:prop>"#,
-    );
-
-    Ok(HttpResponse::Ok().content_type("application/xml; charset=utf-8").header("lock-token", format!("<{}>", token)).body(xml_body))
+        Some(None) => {
+            return error_response(ResultCode::BadRequest);
+        }, // Invalid token format
+        Some(Some(in_token)) => {
+            // Update lock request
+            if let Some(locked) = &file_item.locked {
+                return if locked.id == in_token {
+                    match update_lock_info(&in_token, &file_item, uinf, mstorage).await {
+                        ResultCode::Ok => Ok(build_lock_response(&in_token, &ticket, &file_id, &file_name)),
+                        _ => error_response(ResultCode::InternalServerError),
+                    }
+                } else {
+                    error_response(ResultCode::Locked)
+                };
+            } else {
+                let token = Utc::now().timestamp().to_string();
+                return match update_lock_info(&token, &file_item, uinf, mstorage).await {
+                    ResultCode::Ok => Ok(build_lock_response(&token, &ticket, &file_id, &file_name)),
+                    _ => error_response(ResultCode::InternalServerError),
+                };
+            }
+        },
+    }
 }
 
 pub(crate) async fn handle_webdav_unlock(
@@ -287,7 +311,7 @@ async fn handle_webdav_get(
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Inline).await
+    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Inline, true).await
 }
 
 pub(crate) async fn handle_webdav_get_3(
@@ -406,4 +430,24 @@ pub async fn get_content_type(path: &str, mime: &Option<Mime>) -> io::Result<Str
         }
     };
     Ok(content_type)
+}
+
+fn error_response(code: ResultCode) -> io::Result<HttpResponse> {
+    let status_code = StatusCode::from_u16(code as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    Ok(HttpResponse::build(status_code).finish())
+}
+
+// This function is defined outside `handle_webdav_lock` to construct the lock response
+fn build_lock_response(token: &str, ticket: &str, file_id: &str, file_name: &str) -> HttpResponse {
+    let lock_root = format!("/webdav/{}/{}/{}", ticket, file_id, file_name);
+    let xml_body = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+        <D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock>
+        <D:locktoken><D:href>{}</D:href></D:locktoken>
+        <D:lockroot><D:href>{}</D:href></D:lockroot>
+        </D:activelock></D:lockdiscovery></D:prop>"#,
+        token, lock_root
+    );
+
+    HttpResponse::Ok().content_type("application/xml; charset=utf-8").header("lock-token", format!("<{}>", token)).body(xml_body)
 }
