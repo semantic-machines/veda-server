@@ -414,10 +414,8 @@ pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Da
     let mut indv = Individual::default();
     indv.set_id(&fi.info_id);
     indv.set_datetime("v-s:lockedDateTo", Utc::now().naive_utc().timestamp());
-    indv.set_uri("v-s:lockedBy", "");
-    indv.set_string("v-s:lockId", "", Lang::none());
 
-    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::RemoveFrom, &indv).result
+    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv).result
 }
 
 pub async fn update_lock_info(token: &str, fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> ResultCode {

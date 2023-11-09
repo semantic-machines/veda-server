@@ -223,20 +223,12 @@ pub(crate) async fn handle_webdav_lock(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    let token_in_request = req.headers().get("if").map(|header_value| {
-        header_value.to_str().ok().and_then(|value| {
-            if value.len() >= 4 {
-                Some(value[2..value.len() - 2].to_owned())
-            } else {
-                None
-            }
-        })
-    });
+    let token_in_request = extract_token_from_header(&req).await;
 
-    match token_in_request {
+    return match token_in_request {
         None => {
             // First lock request
-            return if is_locked(&file_item) {
+            if is_locked(&file_item) {
                 error_response(ResultCode::Locked)
             } else {
                 let token = Utc::now().timestamp().to_string();
@@ -244,31 +236,29 @@ pub(crate) async fn handle_webdav_lock(
                     ResultCode::Ok => Ok(build_lock_response(&token, &ticket, &file_id, &file_name)),
                     _ => error_response(ResultCode::InternalServerError),
                 }
-            };
+            }
         },
-        Some(None) => {
-            return error_response(ResultCode::BadRequest);
-        }, // Invalid token format
+        Some(None) => error_response(ResultCode::BadRequest), // Invalid token format
         Some(Some(in_token)) => {
             // Update lock request
             if let Some(locked) = &file_item.locked {
-                return if locked.id == in_token {
+                if locked.id == in_token {
                     match update_lock_info(&in_token, &file_item, uinf, mstorage).await {
                         ResultCode::Ok => Ok(build_lock_response(&in_token, &ticket, &file_id, &file_name)),
                         _ => error_response(ResultCode::InternalServerError),
                     }
                 } else {
                     error_response(ResultCode::Locked)
-                };
+                }
             } else {
                 let token = Utc::now().timestamp().to_string();
-                return match update_lock_info(&token, &file_item, uinf, mstorage).await {
+                match update_lock_info(&token, &file_item, uinf, mstorage).await {
                     ResultCode::Ok => Ok(build_lock_response(&token, &ticket, &file_id, &file_name)),
                     _ => error_response(ResultCode::InternalServerError),
-                };
+                }
             }
         },
-    }
+    };
 }
 
 pub(crate) async fn handle_webdav_unlock(
@@ -295,11 +285,26 @@ pub(crate) async fn handle_webdav_unlock(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    if update_unlock_info(&file_item, uinf, mstorage).await != ResultCode::Ok {
-        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
-    }
-
-    Ok(HttpResponse::new(StatusCode::OK))
+    let token_in_request = extract_token_from_header(&req).await;
+    return match token_in_request {
+        None => error_response(ResultCode::BadRequest),
+        Some(None) => error_response(ResultCode::BadRequest), // Invalid token format
+        Some(Some(in_token)) => {
+            // Update unlock request
+            if let Some(locked) = &file_item.locked {
+                if locked.id == in_token {
+                    match update_unlock_info(&file_item, uinf, mstorage).await {
+                        ResultCode::Ok => Ok(HttpResponse::new(StatusCode::OK)),
+                        _ => error_response(ResultCode::InternalServerError),
+                    }
+                } else {
+                    error_response(ResultCode::Locked)
+                }
+            } else {
+                error_response(ResultCode::InternalServerError)
+            }
+        },
+    };
 }
 
 async fn handle_webdav_get(
@@ -450,4 +455,16 @@ fn build_lock_response(token: &str, ticket: &str, file_id: &str, file_name: &str
     );
 
     HttpResponse::Ok().content_type("application/xml; charset=utf-8").header("lock-token", format!("<{}>", token)).body(xml_body)
+}
+
+async fn extract_token_from_header(req: &HttpRequest) -> Option<Option<String>> {
+    req.headers().get("if").map(|header_value| {
+        header_value.to_str().ok().and_then(|value| {
+            if value.len() >= 4 {
+                Some(value[2..value.len() - 2].to_owned())
+            } else {
+                None
+            }
+        })
+    })
 }
