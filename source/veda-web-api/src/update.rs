@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::common::{extract_addr, get_user_info, log, log_w, TicketRequest, UserContextCache, UserId};
 use actix_web::http::StatusCode;
 use actix_web::{put, web, HttpRequest, HttpResponse};

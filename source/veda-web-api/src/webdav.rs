@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::common::{get_user_info, UserContextCache, UserId};
 use crate::files::{get_file, is_locked, put_file, to_file_item, update_lock_info, update_unlock_info, FileItem};
 use actix_multipart::Multipart;
@@ -117,7 +119,7 @@ pub(crate) async fn handle_webdav_head(
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id, _file_name) = path.into_inner();
-    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, true, header::DispositionType::Inline, true).await
+    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, true, header::DispositionType::Inline).await
 }
 
 async fn handle_webdav_propfind(
@@ -143,11 +145,11 @@ async fn handle_webdav_propfind(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    return if is_file {
+    if is_file {
         Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket)))
     } else {
         Ok(res_multistatus(&file_id_to_dav_xml(&file_item, ticket)))
-    };
+    }
 }
 
 pub(crate) async fn handle_webdav_propfind_3(
@@ -197,7 +199,7 @@ pub(crate) async fn handle_webdav_proppatch(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    return Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket)));
+    Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket)))
 }
 pub(crate) async fn handle_webdav_lock(
     path: web::Path<(String, String, String)>,
@@ -225,7 +227,7 @@ pub(crate) async fn handle_webdav_lock(
 
     let token_in_request = extract_token_from_header(&req).await;
 
-    return match token_in_request {
+    match token_in_request {
         None => {
             // First lock request
             if is_locked(&file_item) {
@@ -258,7 +260,7 @@ pub(crate) async fn handle_webdav_lock(
                 }
             }
         },
-    };
+    }
 }
 
 pub(crate) async fn handle_webdav_unlock(
@@ -286,7 +288,7 @@ pub(crate) async fn handle_webdav_unlock(
     };
 
     let token_in_request = extract_token_from_header(&req).await;
-    return match token_in_request {
+    match token_in_request {
         None => error_response(ResultCode::BadRequest),
         Some(None) => error_response(ResultCode::BadRequest), // Invalid token format
         Some(Some(in_token)) => {
@@ -304,7 +306,7 @@ pub(crate) async fn handle_webdav_unlock(
                 error_response(ResultCode::InternalServerError)
             }
         },
-    };
+    }
 }
 
 async fn handle_webdav_get(
@@ -316,7 +318,7 @@ async fn handle_webdav_get(
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Inline, true).await
+    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Inline).await
 }
 
 pub(crate) async fn handle_webdav_get_3(

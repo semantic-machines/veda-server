@@ -34,6 +34,25 @@ use v_common::v_authorization::common::{Access, AuthorizationContext};
 const FILE_BASE_PATH: &str = "./data/files";
 const LOCK_TIMEOUT: i64 = 3600;
 
+#[derive(Debug, Default)]
+pub struct Lock {
+    pub(crate) id: String,
+    pub(crate) by: String,
+    pub(crate) date: DateTime<Utc>,
+}
+
+#[derive(Debug, Default)]
+pub struct FileItem {
+    id: String,
+    path: String,
+    mime: Option<mime::Mime>,
+    pub(crate) info_id: String,
+    pub(crate) size: u64,
+    pub(crate) last_modified: DateTime<Utc>,
+    pub(crate) original_name: String,
+    pub(crate) locked: Option<Lock>,
+}
+
 pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az: &Mutex<LmdbAzContext>) -> Result<FileItem, ResultCode> {
     let file_info_id = if !file_info_id.contains(':') {
         file_info_id.replacen('_', ":", 1)
@@ -41,7 +60,7 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
         file_info_id.to_string()
     };
 
-    let (mut file_info, res_code) = get_individual_from_db(&file_info_id, &uinf.user_id, &db, Some(&az)).await?;
+    let (mut file_info, res_code) = get_individual_from_db(&file_info_id, &uinf.user_id, db, Some(az)).await?;
 
     if res_code != ResultCode::Ok {
         //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res_code);
@@ -56,11 +75,11 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
     } else {
         None
     };
-    if lock_id.is_some() && locked_by.is_some() && locked_date.is_some() {
+    if let (Some(id), Some(by), Some(date)) = (lock_id, locked_by, locked_date) {
         lock = Some(Lock {
-            id: lock_id.unwrap(),
-            by: locked_by.unwrap(),
-            date: locked_date.unwrap(),
+            id,
+            by,
+            date,
         });
     }
 
@@ -90,32 +109,13 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
     Ok(FileItem {
         info_id: file_info_id,
         id: uri,
-        path: path,
+        path,
         mime: Some(file_mime),
-        size: size,
-        last_modified: last_modified,
+        size,
+        last_modified,
         original_name: original_file_name,
         locked: lock,
     })
-}
-
-#[derive(Debug, Default)]
-pub struct Lock {
-    pub(crate) id: String,
-    pub(crate) by: String,
-    pub(crate) date: DateTime<Utc>,
-}
-
-#[derive(Debug, Default)]
-pub struct FileItem {
-    pub(crate) info_id: String,
-    id: String,
-    path: String,
-    mime: Option<mime::Mime>,
-    pub(crate) size: u64,
-    pub(crate) last_modified: DateTime<Utc>,
-    pub(crate) original_name: String,
-    pub(crate) locked: Option<Lock>,
 }
 
 #[get("/files/{file_id}")]
@@ -128,7 +128,7 @@ pub(crate) async fn load_file(
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    get_file(params.ticket.to_owned(), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Attachment, false).await
+    get_file(params.ticket.to_owned(), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Attachment).await
 }
 
 pub async fn get_file(
@@ -141,7 +141,6 @@ pub async fn get_file(
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     only_headers: bool,
     disposition_type: header::DispositionType,
-    use_lock: bool,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
@@ -157,10 +156,6 @@ pub async fn get_file(
         Ok(file_item) => file_item,
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
-
-    if use_lock && is_locked(&file_item) {
-        return Ok(HttpResponse::new(StatusCode::LOCKED));
-    }
 
     let file_full_name = format!("{}/{}/{}", FILE_BASE_PATH, file_item.path, sanitize_filename::sanitize(&file_item.id));
     let file_ds = NamedFile::open(&file_full_name)?;
@@ -244,7 +239,7 @@ pub(crate) async fn put_file(
     in_file_item: Option<FileItem>,
 ) -> ActixResult<HttpResponse> {
     let start_time = Instant::now();
-    let uinf = match get_user_info(ticket, &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(ticket, &req, &ticket_cache, db, activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             log_w(Some(&start_time), &get_ticket(&req, &None), &extract_addr(&req), "", "upload_file", "", res);
@@ -273,8 +268,8 @@ pub(crate) async fn put_file(
             AsyncWriteExt::write_all(ff, &bytes).await?;
         }
 
-        if in_file_item.is_some() {
-            (false, in_file_item.unwrap())
+        if let Some(v) = in_file_item {
+            (false, v)
         } else {
             return Ok(HttpResponse::InternalServerError().into());
         }
@@ -399,11 +394,7 @@ async fn store_payload_to_file(mut payload: Multipart, path: &str, file_name: &s
 
 pub fn is_locked(fi: &FileItem) -> bool {
     if let Some(locked) = &fi.locked {
-        return if Utc::now() > locked.date {
-            false
-        } else {
-            true
-        };
+        return Utc::now() <= locked.date;
     }
     false
 }

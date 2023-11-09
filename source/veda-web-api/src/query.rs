@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::common::{get_ticket, QueryRequest, UserContextCache, UserId, UserInfo, VQLClientConnectType};
 use crate::common::{get_user_info, log};
 use crate::sparql_client::SparqlClient;

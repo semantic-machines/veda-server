@@ -79,7 +79,7 @@ pub async fn get_user_info(
     };
 
     let addr = extract_addr(req);
-    let user_id = check_ticket(&ticket_id, ticket_cache, &addr, db, &activity_sender).await?;
+    let user_id = check_ticket(&ticket_id, ticket_cache, &addr, db, activity_sender).await?;
 
     Ok(UserInfo {
         ticket: ticket_id,
@@ -267,7 +267,7 @@ pub(crate) async fn check_ticket(
             if ticket_obj.is_ticket_valid(addr, user_context_cache.check_ticket_ip) != ResultCode::Ok {
                 return Err(ResultCode::TicketNotFound);
             }
-            send_user_activity(&activity_sender, &ticket_obj.user_uri).await;
+            send_user_activity(activity_sender, &ticket_obj.user_uri).await;
             Ok(ticket_obj.user_uri.clone())
         } else {
             Err(ResultCode::TicketNotFound)
