@@ -31,7 +31,7 @@ use crate::webdav::{
 use actix_files::{Files, NamedFile};
 use actix_web::http::Method;
 use actix_web::middleware::normalize::TrailingSlash;
-use actix_web::middleware::Logger;
+use actix_web::middleware::{Logger, NormalizePath};
 use actix_web::rt::System;
 use actix_web::{get, head, middleware, web, App, HttpResponse, HttpServer};
 use futures::channel::mpsc;
@@ -181,7 +181,6 @@ async fn main() -> std::io::Result<()> {
         let m_unlock = Method::from_bytes(b"UNLOCK").unwrap();
 
         App::new()
-            .wrap(middleware::NormalizePath::new(TrailingSlash::Trim))
             .wrap(Logger::default())
             .wrap(middleware::Compress::default())
             .wrap(
@@ -240,21 +239,26 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/query").route(web::get().to(query_get)).route(web::post().to(query_post)))
             .service(web::resource("/authenticate").route(web::get().to(authenticate_get)).route(web::post().to(authenticate_post)))
             .service(
-                web::resource("/webdav/{ticket_id}/{file_id}/{file_name}")
-                    .route(web::put().to(handle_webdav_put))
-                    .route(web::get().to(handle_webdav_get_3))
-                    .route(web::head().to(handle_webdav_head))
-                    .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_3))
-                    .route(web::route().method(m_proppatch.clone()).to(handle_webdav_proppatch))
-                    .route(web::route().method(m_lock.clone()).to(handle_webdav_lock))
-                    .route(web::route().method(m_unlock.clone()).to(handle_webdav_unlock))
-                    .route(web::route().method(m_options.clone()).to(handle_webdav_options_3)),
-            )
-            .service(
-                web::resource("/webdav/{ticket_id}/{file_id}")
-                    .route(web::get().to(handle_webdav_get_2))
-                    .route(web::route().method(m_options.clone()).to(handle_webdav_options_2))
-                    .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_2)),
+                web::scope("/webdav")
+                    // Применяем NormalizePath middleware
+                    .wrap(NormalizePath::new(TrailingSlash::Trim))
+                    .service(
+                        web::resource("/{ticket_id}/{file_id}/{file_name}")
+                            .route(web::put().to(handle_webdav_put))
+                            .route(web::get().to(handle_webdav_get_3))
+                            .route(web::head().to(handle_webdav_head))
+                            .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_3))
+                            .route(web::route().method(m_proppatch.clone()).to(handle_webdav_proppatch))
+                            .route(web::route().method(m_lock.clone()).to(handle_webdav_lock))
+                            .route(web::route().method(m_unlock.clone()).to(handle_webdav_unlock))
+                            .route(web::route().method(m_options.clone()).to(handle_webdav_options_3)),
+                    )
+                    .service(
+                        web::resource("/{ticket_id}/{file_id}")
+                            .route(web::get().to(handle_webdav_get_2))
+                            .route(web::route().method(m_options.clone()).to(handle_webdav_options_2))
+                            .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_2)),
+                    ),
             )
             .service(Files::new("/", "./public").redirect_to_slash_directory().index_file("index.html"))
     })
