@@ -186,11 +186,12 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Compress::default())
             .wrap(
                 middleware::DefaultHeaders::new()
-                    .header("Server", "nginx/1.19.6")
                     .header("X-XSS-Protection", "1; mode=block")
                     .header("X-Content-Type-Options", "nosniff")
                     .header("X-Frame-Options", "sameorigin")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate, private"),
+                    .header("Pragma", "no-cache")
+                    .header("Cache-Control", "no-cache, no-store, must-revalidate, private")
+                    .header("Content-Security-Policy", "default-src 'self'; frame-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' ws: wss:;"),
             )
             .app_data(json_cfg)
             .data(Arc::new(Mutex::new(tx.clone())))
