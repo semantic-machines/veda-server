@@ -63,6 +63,7 @@ pub struct UserInfo {
     pub ticket: Option<String>,
     pub addr: Option<IpAddr>,
     pub user_id: String,
+    pub end_time: i64,
 }
 
 pub async fn get_user_info(
@@ -79,12 +80,13 @@ pub async fn get_user_info(
     };
 
     let addr = extract_addr(req);
-    let user_id = check_ticket(&ticket_id, ticket_cache, &addr, db, activity_sender).await?;
+    let ticket = check_ticket(&ticket_id, ticket_cache, &addr, db, activity_sender).await?;
 
     Ok(UserInfo {
         ticket: ticket_id,
         addr,
-        user_id,
+        user_id: ticket.user_uri,
+        end_time: ticket.end_time,
     })
 }
 
@@ -252,23 +254,39 @@ pub(crate) async fn check_ticket(
     addr: &Option<IpAddr>,
     db: &AStorage,
     activity_sender: &Arc<Mutex<Sender<UserId>>>,
-) -> Result<String, ResultCode> {
+) -> Result<Ticket, ResultCode> {
     if w_ticket_id.is_none() {
-        return Ok("cfg:Guest".to_owned());
+        return Ok(Ticket {
+            id: "".to_string(),
+            user_uri: "cfg:Guest".to_owned(),
+            user_login: "".to_string(),
+            result: ResultCode::Zero,
+            start_time: 0,
+            end_time: 0,
+            user_addr: "".to_string(),
+        });
     }
 
     let ticket_id = w_ticket_id.as_ref().unwrap();
     if ticket_id.is_empty() || ticket_id == "systicket" {
-        return Ok("cfg:Guest".to_owned());
+        return Ok(Ticket {
+            id: "".to_string(),
+            user_uri: "cfg:Guest".to_owned(),
+            user_login: "".to_string(),
+            result: ResultCode::Zero,
+            start_time: 0,
+            end_time: 0,
+            user_addr: "".to_string(),
+        });
     }
 
-    let user_id = if let Some(cached_ticket) = user_context_cache.read_tickets.get(ticket_id) {
+    if let Some(cached_ticket) = user_context_cache.read_tickets.get(ticket_id) {
         if let Some(ticket_obj) = cached_ticket.get_one() {
             if ticket_obj.is_ticket_valid(addr, user_context_cache.check_ticket_ip) != ResultCode::Ok {
                 return Err(ResultCode::TicketNotFound);
             }
             send_user_activity(activity_sender, &ticket_obj.user_uri).await;
-            Ok(ticket_obj.user_uri.clone())
+            Ok(ticket_obj.clone())
         } else {
             Err(ResultCode::TicketNotFound)
         }
@@ -289,13 +307,11 @@ pub(crate) async fn check_ticket(
 
         //info!("@ upd cache ticket={}", ticket_obj.id);
         let mut t = user_context_cache.write_tickets.lock().await;
-        t.insert(ticket_id.to_owned(), ticket_obj);
+        t.insert(ticket_id.to_owned(), ticket_obj.clone());
         t.refresh();
 
-        Ok(user_uri)
-    };
-
-    user_id
+        Ok(ticket_obj)
+    }
 }
 
 async fn send_user_activity(activity_sender: &Arc<Mutex<Sender<UserId>>>, user_id: &str) {

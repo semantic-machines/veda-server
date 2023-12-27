@@ -5,6 +5,7 @@ mod auth;
 mod common;
 mod files;
 mod get;
+mod multifactor;
 mod query;
 mod sparql_client;
 mod update;
@@ -19,6 +20,7 @@ use crate::auth::{authenticate_get, authenticate_post, get_membership, get_right
 use crate::common::{db_connector, UserContextCache, VQLClient, VQLClientConnectType};
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
+use crate::multifactor::{handle_post_request, MultifactorProps};
 use crate::query::{query_get, query_post, QueryEndpoints};
 use crate::sparql_client::SparqlClient;
 use crate::update::{add_to_individual, put_individual, put_individuals, remove_from_individual, remove_individual, set_in_individual};
@@ -33,10 +35,11 @@ use actix_web::http::Method;
 use actix_web::middleware::normalize::TrailingSlash;
 use actix_web::middleware::{Logger, NormalizePath};
 use actix_web::rt::System;
-use actix_web::{get, head, middleware, web, App, HttpResponse, HttpServer};
+use actix_web::{get, guard, head, middleware, web, App, HttpResponse, HttpServer};
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::{select, FutureExt};
+use ini::Ini;
 use rusty_tarantool::tarantool::ClientConfig;
 use serde_derive::Deserialize;
 use std::env;
@@ -139,6 +142,19 @@ async fn main() -> std::io::Result<()> {
     info!("LISTEN {port}");
 
     let mut server_future = HttpServer::new(move || {
+        let mut mfp = MultifactorProps::default();
+        if let Ok(conf) = Ini::load_from_file("multifactor.ini") {
+            let section = conf.section(Some("settings")).expect("Section 'settings' not found");
+
+            mfp = MultifactorProps {
+                api_key: section.get("api_key").expect("api_key not found").to_string(),
+                api_secret: section.get("api_secret").expect("api_secret not found").to_string(),
+                url: section.get("url").expect("url not found").to_string(),
+                sign_url: section.get("sign_url").expect("sign_url not found").to_string(),
+                audience: section.get("audience").expect("audience not found").to_string(),
+            };
+        }
+
         let db = db_connector(&tt_config);
 
         let mut ch = CHClient::new(Module::get_property("query_search_db").unwrap_or_default());
@@ -193,6 +209,7 @@ async fn main() -> std::io::Result<()> {
                     .header("Content-Security-Policy", "default-src 'self'; frame-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' ws: wss:;"),
             )
             .app_data(json_cfg)
+            .data(mfp)
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
                 read_tickets: ticket_cache_read,
@@ -261,6 +278,7 @@ async fn main() -> std::io::Result<()> {
                             .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_2)),
                     ),
             )
+            .service(web::resource("/").guard(guard::Post()).route(web::post().to(handle_post_request)))
             .service(Files::new("/", "./public").redirect_to_slash_directory().index_file("index.html"))
     })
     .bind(format!("0.0.0.0:{port}"))?

@@ -3,6 +3,7 @@ use crate::common::{
     UserInfo,
 };
 use crate::common::{get_user_info, log};
+use crate::multifactor::{multifactor, MultifactorProps};
 use actix_web::http::StatusCode;
 use actix_web::{get, HttpRequest};
 use actix_web::{web, HttpResponse};
@@ -34,6 +35,7 @@ pub(crate) async fn get_ticket_trusted(
         ticket: None,
         addr: extract_addr(&req),
         user_id: String::new(),
+        end_time: 0,
     };
 
     if let Err(e) = check_ticket(&Some(params.ticket.clone()), &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
@@ -77,6 +79,7 @@ pub(crate) async fn logout(
         ticket: None,
         addr: extract_addr(&req),
         user_id: String::new(),
+        end_time: 0,
     };
 
     match check_ticket(&params.ticket, &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
@@ -118,8 +121,8 @@ pub(crate) async fn is_ticket_valid(
     }
 
     match check_ticket(&params.ticket, &ticket_cache, &extract_addr(&req), &tt, &activity_sender).await {
-        Ok(user_uri) => {
-            log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &user_uri, "is_ticket_valid", "", ResultCode::Ok);
+        Ok(ticket) => {
+            log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &ticket.user_uri, "is_ticket_valid", "", ResultCode::Ok);
             Ok(HttpResponse::Ok().json(true))
         },
         Err(e) => {
@@ -134,9 +137,10 @@ pub(crate) async fn authenticate_post(
     auth: web::Data<Mutex<AuthClient>>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
+    mfp: web::Data<MultifactorProps>,
     req: HttpRequest,
 ) -> io::Result<HttpResponse> {
-    authenticate(&data.login, &data.password, &data.secret, auth, ticket_cache, db, req).await
+    authenticate(&data.login, &data.password, &data.secret, auth, ticket_cache, db, mfp, req).await
 }
 
 pub(crate) async fn authenticate_get(
@@ -144,11 +148,13 @@ pub(crate) async fn authenticate_get(
     auth: web::Data<Mutex<AuthClient>>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
+    mfp: web::Data<MultifactorProps>,
     req: HttpRequest,
 ) -> io::Result<HttpResponse> {
-    authenticate(&params.login, &params.password, &params.secret, auth, ticket_cache, db, req).await
+    authenticate(&params.login, &params.password, &params.secret, auth, ticket_cache, db, mfp, req).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn authenticate(
     login: &str,
     password: &Option<String>,
@@ -156,6 +162,7 @@ async fn authenticate(
     auth: web::Data<Mutex<AuthClient>>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
+    mfp: web::Data<MultifactorProps>,
     req: HttpRequest,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
@@ -163,6 +170,7 @@ async fn authenticate(
         ticket: None,
         addr: extract_addr(&req),
         user_id: String::new(),
+        end_time: 0,
     };
     return match auth.lock().await.authenticate(login, password, extract_addr(&req), secret) {
         Ok(r) => {
@@ -174,6 +182,12 @@ async fn authenticate(
                 if let Err(e) = check_external_user(user_uri, &db).await {
                     log(Some(&start_time), &uinf, "authenticate", login, e);
                     return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap()));
+                }
+            }
+
+            if let Some(auth_origin) = r["auth_origin"].as_str() {
+                if auth_origin.to_uppercase() == "VEDA+MULTIFACTOR" {
+                    return multifactor(req, &uinf, mfp.as_ref()).await;
                 }
             }
 

@@ -88,6 +88,7 @@ pub(crate) fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&
     ticket_obj
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn get_ticket_trusted(
     conf: &AuthConf,
     tr_ticket_id: Option<&str>,

@@ -33,6 +33,7 @@ pub(crate) struct AuthWorkPlace<'a> {
     pub edited: i64,
     pub credential: &'a mut Individual,
     pub is_permanent: bool,
+    pub origin: String,
 }
 
 impl<'a> AuthWorkPlace<'a> {
@@ -261,7 +262,8 @@ impl<'a> AuthWorkPlace<'a> {
 
     fn get_credential(&mut self, account: &mut Individual) {
         if let Some(account_origin) = account.get_first_literal("v-s:authOrigin") {
-            if account_origin.to_uppercase() == "AD" {
+            self.origin = account_origin.to_uppercase();
+            if self.origin == "AD" {
                 return;
             }
         }
@@ -293,7 +295,7 @@ impl<'a> AuthWorkPlace<'a> {
         warn!("request new password, login = {}, password = {}, secret = {}", self.login, self.password, self.secret);
 
         if let Some(account_origin) = account.get_first_literal("v-s:authOrigin") {
-            if account_origin != "veda" {
+            if account_origin.to_uppercase() != "VEDA" {
                 return ResultCode::ChangePasswordForbidden;
             }
         }

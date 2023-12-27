@@ -33,6 +33,7 @@ pub(crate) async fn get_operation_state(params: web::Query<GetOperationStateRequ
         ticket: None,
         addr: extract_addr(&req),
         user_id: String::new(),
+        end_time: 0,
     };
     let module_name = get_module_name(params.module_id);
     if let Ok(mut module_info) = ModuleInfo::new(BASE_PATH, module_name, true) {

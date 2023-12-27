@@ -37,7 +37,7 @@ const LOCK_TIMEOUT: i64 = 3600;
 #[derive(Debug, Default)]
 pub struct Lock {
     pub(crate) id: String,
-    pub(crate) by: String,
+    //pub(crate) by: String,
     pub(crate) date: DateTime<Utc>,
 }
 
@@ -75,10 +75,10 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
     } else {
         None
     };
-    if let (Some(id), Some(by), Some(date)) = (lock_id, locked_by, locked_date) {
+    if let (Some(id), Some(_by), Some(date)) = (lock_id, locked_by, locked_date) {
         lock = Some(Lock {
             id,
-            by,
+            //by,
             date,
         });
     }
@@ -404,7 +404,7 @@ pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Da
 
     let mut indv = Individual::default();
     indv.set_id(&fi.info_id);
-    indv.set_datetime("v-s:lockedDateTo", Utc.timestamp(0, 0).timestamp());
+    indv.set_datetime("v-s:lockedDateTo", Utc.timestamp_opt(0, 0).unwrap().timestamp());
 
     ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv).result
 }

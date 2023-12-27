@@ -95,6 +95,7 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn req_prepare(
     conf: &AuthConf,
     request: &Message,
@@ -118,7 +119,7 @@ fn req_prepare(
             let secret = v["secret"].as_str().unwrap_or_default();
             let ip = v["addr"].as_str().unwrap_or_default();
 
-            let user_stat = suspicious.entry(login.to_owned()).or_insert_with(UserStat::default);
+            let user_stat = suspicious.entry(login.to_owned()).or_default();
 
             let mut ah = AuthWorkPlace {
                 conf,
@@ -137,6 +138,7 @@ fn req_prepare(
                 edited: 0,
                 credential: &mut Default::default(),
                 is_permanent: false,
+                origin: "VEDA".to_string(),
             };
 
             let ticket = ah.authenticate();
@@ -150,6 +152,7 @@ fn req_prepare(
             res["user_login"] = json!(ticket.user_login);
             res["result"] = json!(ticket.result as i64);
             res["end_time"] = json!(ticket.end_time);
+            res["auth_origin"] = json!(ah.origin);
 
             return Message::from(res.to_string().as_bytes());
         },
