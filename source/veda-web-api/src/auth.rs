@@ -176,7 +176,8 @@ async fn authenticate(
         Ok(r) => {
             uinf.ticket = Some(r["id"].as_str().unwrap_or("").to_string());
 
-            let user_uri = &r["user_uri"].as_str().unwrap_or("");
+            let user_uri = r["user_uri"].as_str().unwrap_or("");
+            uinf.user_id = user_uri.to_string();
 
             if ticket_cache.are_external_users {
                 if let Err(e) = check_external_user(user_uri, &db).await {
@@ -187,6 +188,7 @@ async fn authenticate(
 
             if let Some(auth_origin) = r["auth_origin"].as_str() {
                 if auth_origin.to_uppercase() == "VEDA+MULTIFACTOR" {
+                    info!("detected [VEDA+MULTIFACTOR] for user {}", user_uri);
                     return multifactor(req, &uinf, mfp.as_ref()).await;
                 }
             }

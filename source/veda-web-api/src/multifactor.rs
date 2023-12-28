@@ -44,6 +44,7 @@ pub struct MultifactorProps {
     pub url: String,
     pub sign_url: String,
     pub audience: String,
+    pub callback_scheme: Option<String>,
 }
 
 use reqwest;
@@ -59,14 +60,19 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
     let encoded_credentials = base64::encode(credentials);
     let url = format!("{}/access/requests", mfp.url);
 
-    let mut hasher = Sha256::new();
-    hasher.update(uinf.user_id.as_bytes());
-    let result = hasher.finalize();
+    //let mut hasher = Sha256::new();
+    //hasher.update(uinf.user_id.as_bytes());
+    //let result = hasher.finalize();
 
-    let user_identity = format!("{:x}@optiflow", result);
+    let user_identity = format!("{}@optiflow", &uinf.user_id);
     let encrypted_data_base64 = encrypt(uinf.ticket.as_ref().unwrap()).await?;
 
-    let scheme = req.connection_info().scheme().to_string();
+    let scheme = if let Some(v) = &mfp.callback_scheme {
+        v.to_string()
+    } else {
+        req.connection_info().scheme().to_string()
+    };
+
     let host = req.connection_info().host().to_string();
     let action_url = format!("{}://{}", scheme, host);
 
@@ -80,14 +86,13 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
             "id": encrypted_data_base64
         }
     });
-
     let serialized_data = serde_json::to_string(&auth_request_data)?;
+
+    info!("send request to multifactor, identity={}", user_identity);
 
     let client = Client::new();
     let mut headers = HeaderMap::new();
-
     let auth_header_value = HeaderValue::from_str(&format!("Basic {}", encoded_credentials)).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
     headers.insert(AUTHORIZATION, auth_header_value);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -243,7 +248,7 @@ pub async fn handle_post_request(
     }
 }
 
-pub async fn mfa_callback_handler(access_token: &str, mfp: &MultifactorProps) -> io::Result<String> {
+async fn mfa_callback_handler(access_token: &str, mfp: &MultifactorProps) -> io::Result<String> {
     let jwks = fetch_jwks(&mfp.sign_url).await.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка при получении JWKS: {}", e)))?;
     let c = decode_jwt(&jwks, access_token, &mfp.audience).await.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка при проверке токена: {}", e)))?;
     let ticket = decrypt(&c.id).await.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка при расшифровке ID: {}", e)))?;

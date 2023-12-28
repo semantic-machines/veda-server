@@ -152,6 +152,7 @@ async fn main() -> std::io::Result<()> {
                 url: section.get("url").expect("url not found").to_string(),
                 sign_url: section.get("sign_url").expect("sign_url not found").to_string(),
                 audience: section.get("audience").expect("audience not found").to_string(),
+                callback_scheme: section.get("callback_scheme").map(|s| s.to_string())
             };
         }
 
