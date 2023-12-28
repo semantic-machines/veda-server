@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-actix-web = "3"
+actix-web = { version = "3",  features=["openssl"]}
 actix-service = "1"
 actix-rt = "1"
 actix-files = "0.5.0"
@@ -14,6 +14,8 @@ async-std = "1.11.0"
 futures = "0.3.25"
 sanitize-filename = "0.3"
 awc = { version = "2.0.3", features = ["openssl"] }
+openssl = "0.10"
+reqwest = { version = "0.10", features = ["json"] }
 
 rusty_tarantool = "0.2.10"
 serde = "1.0"
@@ -53,7 +55,6 @@ chardetng = "0.1"
 rsa = "0.5"
 rand = "0.8"
 pem = "0.8"
-openssl = "0.10"
 actix-cors = "0.5"
 jsonwebtoken = "9.2.0"
 sha2 = "0.10"

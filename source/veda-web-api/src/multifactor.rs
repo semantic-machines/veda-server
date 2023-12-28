@@ -1,6 +1,6 @@
 use crate::common::{extract_addr, get_user_info, log_w, UserContextCache, UserId, UserInfo};
-use actix_web::client::Client;
 use actix_web::cookie::Cookie;
+use actix_web::error::ErrorInternalServerError;
 use actix_web::http::StatusCode;
 use actix_web::web::BytesMut;
 use actix_web::HttpResponse;
@@ -46,6 +46,10 @@ pub struct MultifactorProps {
     pub audience: String,
 }
 
+use reqwest;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::Client;
+
 pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorProps) -> io::Result<HttpResponse> {
     if uinf.ticket.is_none() {
         return Ok(HttpResponse::BadRequest().finish());
@@ -79,25 +83,27 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
 
     let serialized_data = serde_json::to_string(&auth_request_data)?;
 
-    let client = Client::default();
-    let response =
-        client.post(url).header("Authorization", format!("Basic {}", encoded_credentials)).header("Content-Type", "application/json").send_body(serialized_data).await;
+    let client = Client::new();
+    let mut headers = HeaderMap::new();
+
+    let auth_header_value = HeaderValue::from_str(&format!("Basic {}", encoded_credentials)).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+    headers.insert(AUTHORIZATION, auth_header_value);
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    let response = client.post(&url).headers(headers).body(serialized_data).send().await;
 
     match response {
-        Ok(mut res) if res.status().is_success() => match res.json::<AuthResponse>().await {
-            Ok(body) if body.success && body.model.status == "AwaitingAuthentication" => {
-                return Ok(HttpResponse::SeeOther().content_type("text/plain").body(body.model.url));
-            },
-            _ => {
-                Ok(HttpResponse::BadRequest().finish())
-            },
+        Ok(res) if res.status().is_success() => match res.json::<AuthResponse>().await {
+            Ok(body) if body.success && body.model.status == "AwaitingAuthentication" => Ok(HttpResponse::SeeOther().content_type("text/plain").body(body.model.url)),
+            _ => Ok(HttpResponse::BadRequest().finish()),
         },
-        Ok(mut res) => {
-            log::error!("HTTP request unsuccessful: Status: {}, Error: {:?}", res.status(), res.body().await);
+        Ok(res) => {
+            log::error!("HTTP request unsuccessful: Status: {}, Error: {:?}, url={}", res.status(), res.text().await, url);
             Ok(HttpResponse::InternalServerError().finish())
         },
         Err(e) => {
-            log::error!("HTTP request failed: {:?}", e);
+            log::error!("HTTP request failed: {:?}, url={}", e, url);
             Ok(HttpResponse::InternalServerError().finish())
         },
     }
@@ -127,12 +133,11 @@ struct Jwk {
 }
 
 async fn fetch_jwks(jwks_url: &str) -> Result<Jwks, actix_web::Error> {
-    let client = Client::default();
-    let mut request = client.get(jwks_url).send().await?;
-    let jwks = request.json::<Jwks>().await?;
-    Ok(jwks)
-}
+    let client = Client::new();
 
+    let res = client.get(jwks_url).send().await.map_err(ErrorInternalServerError)?;
+    res.json::<Jwks>().await.map_err(ErrorInternalServerError)
+}
 async fn decode_jwt(jwks: &Jwks, token: &str, audience: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     let key = &jwks.keys[0];
 
