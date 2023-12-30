@@ -207,7 +207,7 @@ async fn main() -> std::io::Result<()> {
                     .header("X-Frame-Options", "sameorigin")
                     .header("Pragma", "no-cache")
                     .header("Cache-Control", "no-cache, no-store, must-revalidate, private")
-                    .header("Content-Security-Policy", "default-src 'self'; frame-src 'self'; font-src 'self' data:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' ws: wss:;"),
+                    // .header("Content-Security-Policy", "default-src 'self'; frame-src 'self'; font-src 'self' data:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' ws: wss:;"),
             )
             .app_data(json_cfg)
             .data(mfp)
