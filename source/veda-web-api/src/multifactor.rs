@@ -17,7 +17,6 @@ use rsa::pkcs8::{FromPrivateKey, FromPublicKey};
 use rsa::{PaddingScheme, PublicKey};
 use serde::Deserialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::io;
 use std::sync::Arc;
 use std::time::Instant;
@@ -65,7 +64,15 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
     //let result = hasher.finalize();
 
     let user_identity = format!("{}@optiflow", &uinf.user_id);
-    let encrypted_data_base64 = encrypt(uinf.ticket.as_ref().unwrap()).await?;
+    let encrypted_data_base64 = match encrypt(uinf.ticket.as_ref().unwrap()).await {
+        Ok(d) => {
+            d
+        }
+        Err(e) => {
+            log::error!("fail encrypt message, error: {:?}", e);
+            return Ok(HttpResponse::InternalServerError().finish())
+        }
+    };
 
     let scheme = if let Some(v) = &mfp.callback_scheme {
         v.to_string()
