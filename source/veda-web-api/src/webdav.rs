@@ -49,7 +49,7 @@ pub(crate) async fn handle_webdav_put(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    let response_result = put_file(payload, bytes, ticket_cache, &db, &az, req, &activity_sender, Some(ticket), Some(file_item)).await;
+    let response_result = put_file(payload, Some(bytes), ticket_cache, &db, &az, req, &activity_sender, Some(ticket), Some(file_item)).await;
 
     match response_result {
         Ok(mut response) => {

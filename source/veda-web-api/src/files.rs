@@ -217,19 +217,18 @@ async fn check_and_create_file(path: &str, file_name: &str, f: &mut Vec<async_st
 
 pub(crate) async fn save_file(
     payload: Multipart,
-    bytes: web::Bytes,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> ActixResult<impl Responder> {
-    put_file(payload, bytes, ticket_cache, &db, &az, req, &activity_sender, None, None).await
+    put_file(payload, None, /*bytes,*/ ticket_cache, &db, &az, req, &activity_sender, None, None).await
 }
 
 pub(crate) async fn put_file(
     payload: Multipart,
-    bytes: web::Bytes,
+    bytes: Option<web::Bytes>,
     ticket_cache: web::Data<UserContextCache>,
     db: &AStorage,
     az: &Mutex<LmdbAzContext>,
@@ -262,15 +261,20 @@ pub(crate) async fn put_file(
     let (is_encoded_file, fi) = if let Some(v) = store_payload_to_file(payload, tmp_path, &upload_tmp_id, &mut tmp_file).await? {
         v
     } else {
-        check_and_create_file(tmp_path, &upload_tmp_id, &mut tmp_file).await?;
+        if let Some(b) = bytes {
+            check_and_create_file(tmp_path, &upload_tmp_id, &mut tmp_file).await?;
 
-        if let Some(ff) = tmp_file.get_mut(0) {
-            AsyncWriteExt::write_all(ff, &bytes).await?;
-        }
+            if let Some(ff) = tmp_file.get_mut(0) {
+                AsyncWriteExt::write_all(ff, &b).await?;
+            }
 
-        if let Some(v) = in_file_item {
-            (false, v)
+            if let Some(v) = in_file_item {
+                (false, v)
+            } else {
+                return Ok(HttpResponse::InternalServerError().into());
+            }
         } else {
+            log(Some(&start_time), &uinf, "upload_file", "var bytes is empty", ResultCode::Ok);
             return Ok(HttpResponse::InternalServerError().into());
         }
     };

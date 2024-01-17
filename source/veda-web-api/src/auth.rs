@@ -198,7 +198,7 @@ async fn authenticate(
         },
         Err(e) => {
             log(Some(&start_time), &uinf, "authenticate", login, e.result);
-            Ok(HttpResponse::new(StatusCode::from_u16(e.result as u16).unwrap()))
+            Ok(HttpResponse::new(StatusCode::from_u16(e.result as u16).unwrap_or(StatusCode::BAD_REQUEST)))
         },
     };
 }

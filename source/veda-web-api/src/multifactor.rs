@@ -21,6 +21,8 @@ use std::io;
 use std::sync::Arc;
 use std::time::Instant;
 use v_common::storage::async_storage::AStorage;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::Client;
 
 #[derive(Debug, Deserialize)]
 struct AuthResponse {
@@ -28,6 +30,7 @@ struct AuthResponse {
     success: bool,
 }
 
+// Struct representing the authentication model
 #[derive(Debug, Deserialize)]
 struct AuthModel {
     //id: String,
@@ -36,6 +39,7 @@ struct AuthModel {
     url: String,
 }
 
+// Configuration properties for multifactor authentication
 #[derive(Default)]
 pub struct MultifactorProps {
     pub api_key: String,
@@ -46,15 +50,13 @@ pub struct MultifactorProps {
     pub callback_scheme: Option<String>,
 }
 
-use reqwest;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use reqwest::Client;
-
 pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorProps) -> io::Result<HttpResponse> {
+    // Check for a valid ticket for the user
     if uinf.ticket.is_none() {
         return Ok(HttpResponse::BadRequest().finish());
     }
 
+    // Encoding API credentials
     let credentials = format!("{}:{}", mfp.api_key, mfp.api_secret);
     let encoded_credentials = base64::encode(credentials);
     let url = format!("{}/access/requests", mfp.url);
@@ -64,16 +66,17 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
     //let result = hasher.finalize();
 
     let user_identity = format!("{}@optiflow", &uinf.user_id);
+
+    // Encrypt user ticket
     let encrypted_data_base64 = match encrypt(uinf.ticket.as_ref().unwrap()).await {
-        Ok(d) => {
-            d
-        }
+        Ok(d) => d,
         Err(e) => {
             log::error!("fail encrypt message, error: {:?}", e);
-            return Ok(HttpResponse::InternalServerError().finish())
-        }
+            return Ok(HttpResponse::InternalServerError().finish());
+        },
     };
 
+    // Setting up callback scheme and host
     let scheme = if let Some(v) = &mfp.callback_scheme {
         v.to_string()
     } else {
@@ -83,6 +86,7 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
     let host = req.connection_info().host().to_string();
     let action_url = format!("{}://{}", scheme, host);
 
+    // Preparing authentication request payload
     let auth_request_data = json!({
         "identity": user_identity,
         "callback": {
@@ -97,12 +101,14 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
 
     info!("send request to multifactor, identity={}", user_identity);
 
+    // Creating HTTP client and sending request
     let client = Client::new();
     let mut headers = HeaderMap::new();
     let auth_header_value = HeaderValue::from_str(&format!("Basic {}", encoded_credentials)).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     headers.insert(AUTHORIZATION, auth_header_value);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
+    // Processing the response from multifactor service
     let response = client.post(&url).headers(headers).body(serialized_data).send().await;
 
     match response {
@@ -121,6 +127,7 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
     }
 }
 
+// Struct for JWT claims
 #[derive(Debug, Deserialize)]
 struct Claims {
     //sub: String,
@@ -129,11 +136,13 @@ struct Claims {
     id: String,
 }
 
+// Struct for JSON Web Key Set (JWKS)
 #[derive(Deserialize)]
 struct Jwks {
     keys: Vec<Jwk>,
 }
 
+// Struct for a single JSON Web Key (JWK)
 #[derive(Deserialize)]
 struct Jwk {
     //kty: String,
@@ -144,13 +153,18 @@ struct Jwk {
     //alg: String,
 }
 
+// Function to fetch JWKS from a URL
 async fn fetch_jwks(jwks_url: &str) -> Result<Jwks, actix_web::Error> {
+    // Sending HTTP GET request to fetch JWKS
     let client = Client::new();
 
     let res = client.get(jwks_url).send().await.map_err(ErrorInternalServerError)?;
     res.json::<Jwks>().await.map_err(ErrorInternalServerError)
 }
+
+// Function to decode a JWT
 async fn decode_jwt(jwks: &Jwks, token: &str, audience: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+    // Decoding JWT using JWKS and the specified audience
     let key = &jwks.keys[0];
 
     let decoding_key = DecodingKey::from_rsa_components(&key.n, &key.e)?;
@@ -162,6 +176,7 @@ async fn decode_jwt(jwks: &Jwks, token: &str, audience: &str) -> Result<Claims, 
     Ok(token_data.claims)
 }
 
+// Encryption function
 async fn encrypt(data: &str) -> io::Result<String> {
     // Чтение публичного ключа
     let mut public_key_pem = String::new();
@@ -176,6 +191,7 @@ async fn encrypt(data: &str) -> io::Result<String> {
     Ok(encode(encrypted_data))
 }
 
+// Decryption function
 async fn decrypt(data: &str) -> io::Result<String> {
     // Чтение приватного ключа
     let mut private_key_pem = String::new();
@@ -195,6 +211,7 @@ async fn decrypt(data: &str) -> io::Result<String> {
     String::from_utf8(decrypted_data).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to convert to String"))
 }
 
+// Function to handle a POST request
 pub async fn handle_post_request(
     req: HttpRequest,
     mut payload: web::Payload,
