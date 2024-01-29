@@ -20,9 +20,11 @@ use serde_json::json;
 use std::io;
 use std::sync::Arc;
 use std::time::Instant;
+use basen::BASE36;
 use v_common::storage::async_storage::AStorage;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
+use openssl::sha::Sha256;
 
 #[derive(Debug, Deserialize)]
 struct AuthResponse {
@@ -61,11 +63,9 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
     let encoded_credentials = base64::encode(credentials);
     let url = format!("{}/access/requests", mfp.url);
 
-    //let mut hasher = Sha256::new();
-    //hasher.update(uinf.user_id.as_bytes());
-    //let result = hasher.finalize();
-
-    let user_identity = format!("{}@optiflow", &uinf.user_id);
+    let mut hasher = Sha256::new();
+    hasher.update(uinf.user_id.as_bytes());
+    let user_identity = format!("{}@optiflow", BASE36.encode_const_len(&hasher.finish()));
 
     // Encrypt user ticket
     let encrypted_data_base64 = match encrypt(uinf.ticket.as_ref().unwrap()).await {

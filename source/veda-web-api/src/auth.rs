@@ -187,8 +187,8 @@ async fn authenticate(
             }
 
             if let Some(auth_origin) = r["auth_origin"].as_str() {
-                if auth_origin.to_uppercase() == "VEDA+MULTIFACTOR" {
-                    info!("detected [VEDA+MULTIFACTOR] for user {}", user_uri);
+                if auth_origin.to_uppercase() == "VEDA MULTIFACTOR" {
+                    info!("detected [VEDA MULTIFACTOR] for user {}", user_uri);
                     return multifactor(req, &uinf, mfp.as_ref()).await;
                 }
             }
