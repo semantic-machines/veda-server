@@ -295,7 +295,7 @@ impl<'a> AuthWorkPlace<'a> {
         warn!("request new password, login = {}, password = {}, secret = {}", self.login, self.password, self.secret);
 
         if let Some(account_origin) = account.get_first_literal("v-s:authOrigin") {
-            if account_origin.to_uppercase() != "VEDA" {
+            if !account_origin.to_uppercase().contains("VEDA") {
                 return ResultCode::ChangePasswordForbidden;
             }
         }

@@ -73,7 +73,13 @@ pub(crate) fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&
         ticket_obj.end_time = Utc::now().timestamp();
 
         if store(&ticket_obj.to_individual(), &mut backend.storage, backup_storage) {
-            let end_time_str = format!("{:?}", NaiveDateTime::from_timestamp(ticket_obj.end_time, 0));
+            let end_time_str = if let Some(end_time_naive) = NaiveDateTime::from_timestamp_opt(ticket_obj.end_time, 0) {
+                format!("{:?}", end_time_naive)
+            } else {
+                error!("logout: fail update ticket {:?}, fail timestamp", ticket_obj.id);
+                ticket_obj.result = ResultCode::InternalServerError;
+                return ticket_obj;
+            };
             info!("logout: update ticket {}, user={}, addr={}, end={}", ticket_obj.id, ticket_obj.user_uri, ticket_obj.user_addr, end_time_str);
             ticket_obj.result = ResultCode::Ok;
         } else {
