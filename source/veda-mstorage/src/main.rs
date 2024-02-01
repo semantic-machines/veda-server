@@ -559,7 +559,7 @@ fn get_ticket_from_db(id: &str, dest: &mut Ticket, storage: &mut VStorage) {
     let mut indv = Individual::default();
 
     // Use the VStorage object to retrieve the Individual from the database
-    if storage.get_individual_from_db(StorageId::Tickets, id, &mut indv) {
+    if storage.get_individual_from_db(StorageId::Tickets, id, &mut indv) == ResultCode::Ok {
         // Update the Ticket object using the retrieved data
         dest.update_from_individual(&mut indv);
 
