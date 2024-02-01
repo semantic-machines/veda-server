@@ -124,7 +124,7 @@ impl OntologistModule {
 
         for id in self.onto_index.data.keys() {
             let mut rindv: Individual = Individual::default();
-            if self.backend.storage.get_individual(id, &mut rindv) {
+            if self.backend.storage.get_individual(id, &mut rindv) == ResultCode::Ok {
                 rindv.parse_all();
 
                 if rindv.any_exists("rdf:type", &["owl:Ontology"]) {
@@ -169,7 +169,7 @@ impl OntologistModule {
 
         for id in self.onto_index.data.keys() {
             let mut rindv: Individual = Individual::default();
-            if self.backend.storage.get_individual(id, &mut rindv) {
+            if self.backend.storage.get_individual(id, &mut rindv) == ResultCode::Ok {
                 rindv.parse_all();
 
                 if buf.len() > 1 {
