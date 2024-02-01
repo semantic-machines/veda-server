@@ -351,7 +351,7 @@ async fn read_ticket_obj(ticket_id: &str, db: &AStorage) -> Result<Ticket, Resul
     }
     if let Some(lmdb) = &db.lmdb {
         let mut to = Individual::default();
-        if lmdb.lock().await.get_individual_from_db(StorageId::Tickets, ticket_id, &mut to) {
+        if lmdb.lock().await.get_individual_from_db(StorageId::Tickets, ticket_id, &mut to) == ResultCode::Ok {
             ticket_obj.update_from_individual(&mut to);
             ticket_obj.result = ResultCode::Ok;
         }
