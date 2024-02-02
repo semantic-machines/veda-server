@@ -61,5 +61,5 @@ sha2 = "0.10"
 rust-ini = "0.20.0"
 basen = "0.1.0"
 
-v_common = { package = "v-common", version = "=0.5.1" }
+v_common = { package = "v-common", version = "=0.5.10" }
 #v_common = { package = "v-common", path = "../../../v-common" }
