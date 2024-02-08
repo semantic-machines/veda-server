@@ -335,7 +335,7 @@ async fn store_payload_to_file(mut payload: Multipart, path: &str, file_name: &s
     let mut is_encoded_file = false;
     let mut fi: FileItem = FileItem::default();
 
-    while let Ok(Some(mut field)) = payload.try_next().await {
+    while let Some(mut field) = payload.try_next().await? {
         let content_type = field.content_disposition().ok_or(actix_web::error::ParseError::Incomplete)?;
 
         if let Some(name) = content_type.get_name() {
