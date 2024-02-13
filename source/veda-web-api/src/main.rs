@@ -1,4 +1,7 @@
 #[macro_use]
+extern crate version;
+
+#[macro_use]
 extern crate log;
 
 mod auth;
