@@ -1,6 +1,8 @@
 use crate::common::SparqlResponse;
+use crate::query::{AuthorizationLevel, ResultFormat};
 use actix_web::web;
 use awc::Client;
+use futures::lock::Mutex;
 use serde_json::{json, Value};
 use std::io::Error;
 use std::time::Instant;
@@ -90,7 +92,15 @@ impl SparqlClient {
         qres
     }
 
-    pub(crate) async fn query_select(&mut self, _user_uri: &str, query: String, format: &str, prefix_cache: web::Data<PrefixesCache>) -> Result<Value, Error> {
+    pub(crate) async fn query_select(
+        &mut self,
+        user_uri: &str,
+        query: String,
+        format: ResultFormat,
+        authorization_level: AuthorizationLevel,
+        az: &Mutex<LmdbAzContext>,
+        prefix_cache: web::Data<PrefixesCache>,
+    ) -> Result<Value, Error> {
         let res_req =
             self.client.post(&self.point).header("Content-Type", "application/sparql-query").header("Accept", "application/sparql-results+json").send_body(query).await;
 
@@ -108,7 +118,8 @@ impl SparqlClient {
                     let mut jrows = vec![];
 
                     for el in v.results.bindings {
-                        let mut jrow = if format == "full" {
+                        let mut skip_row = false;
+                        let mut jrow = if format == ResultFormat::Full {
                             Value::from(serde_json::Map::new())
                         } else {
                             Value::Array(vec![])
@@ -122,7 +133,19 @@ impl SparqlClient {
                                         let prefix = get_short_prefix(iri.0, &prefix_cache);
                                         let short_iri = format!("{prefix}:{}", iri.1);
 
-                                        jrow[var] = json!(short_iri);
+                                        if authorization_level == AuthorizationLevel::Cell || authorization_level == AuthorizationLevel::RowColumn {
+                                            if az.lock().await.authorize(&short_iri, user_uri, Access::CanRead as u8, false).unwrap_or(0) == Access::CanRead as u8 {
+                                                jrow[var] = json!(short_iri);
+                                            } else {
+                                                if authorization_level == AuthorizationLevel::Cell {
+                                                    jrow[var] = json!("NotAuthorized");
+                                                } else if authorization_level == AuthorizationLevel::RowColumn {
+                                                    skip_row = true;
+                                                }
+                                            }
+                                        } else {
+                                            jrow[var] = json!(short_iri);
+                                        }
                                     },
                                     (Some("literal"), Some(data)) => {
                                         if let Some(dt) = r_datatype {
@@ -155,7 +178,9 @@ impl SparqlClient {
                                 debug!("type={r_type:?}, value={r_data}");
                             }
                         }
-                        jrows.push(jrow);
+                        if !skip_row {
+                            jrows.push(jrow);
+                        }
                     }
 
                     jres["rows"] = Value::Array(jrows);
