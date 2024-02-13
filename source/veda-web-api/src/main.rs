@@ -54,6 +54,7 @@ use v_common::search::clickhouse_client::CHClient;
 use v_common::search::common::PrefixesCache;
 use v_common::search::ft_client::FTClient;
 use v_common::v_api::api_client::{AuthClient, MStorageClient};
+use version::version;
 
 #[head("/")]
 async fn head() -> std::io::Result<HttpResponse> {
@@ -83,7 +84,9 @@ async fn apps_doc(info: web::Path<Info>) -> std::io::Result<NamedFile> {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
-    init_log_with_params("WEB_API", None, true);
+    let module_name = "WEB_API";
+    init_log_with_params(module_name, None, true);
+    info!("{} {}", module_name, version!());
 
     let mut tt_config = None;
     if let Some(p) = Module::get_property("db_connection") {
