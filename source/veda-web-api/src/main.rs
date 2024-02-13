@@ -152,7 +152,7 @@ async fn main() -> std::io::Result<()> {
                 url: section.get("url").expect("url not found").to_string(),
                 sign_url: section.get("sign_url").expect("sign_url not found").to_string(),
                 audience: section.get("audience").expect("audience not found").to_string(),
-                callback_scheme: section.get("callback_scheme").map(|s| s.to_string())
+                callback_scheme: section.get("callback_scheme").map(|s| s.to_string()),
             };
         }
 
@@ -206,8 +206,7 @@ async fn main() -> std::io::Result<()> {
                     .header("X-Content-Type-Options", "nosniff")
                     .header("X-Frame-Options", "sameorigin")
                     .header("Pragma", "no-cache")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate, private")
-                    //.header("Content-Security-Policy", "default-src 'self'; frame-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' ws: wss:;"),
+                    .header("Cache-Control", "no-cache, no-store, must-revalidate, private"), //.header("Content-Security-Policy", "default-src 'self'; frame-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' ws: wss:;"),
             )
             .app_data(json_cfg)
             .data(mfp)

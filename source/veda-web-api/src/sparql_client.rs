@@ -3,8 +3,9 @@ use crate::query::{AuthorizationLevel, ResultFormat};
 use actix_web::web;
 use awc::Client;
 use futures::lock::Mutex;
+use serde_json::Map;
 use serde_json::{json, Value};
-use std::io::Error;
+use std::io::{Error, ErrorKind};
 use std::time::Instant;
 use stopwatch::Stopwatch;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
@@ -109,89 +110,100 @@ impl SparqlClient {
         match res_req {
             Ok(mut response) => match response.json::<SparqlResponse>().await {
                 Ok(v) => {
-                    let mut v_cols = vec![];
-
-                    for el in &v.head.vars {
-                        v_cols.push(Value::String(el.clone()));
-                    }
-                    jres["cols"] = Value::Array(v_cols);
-                    let mut jrows = vec![];
+                    // Обработка заголовков
+                    let v_cols: Vec<Value> = v.head.vars.iter().map(|el| json!(el)).collect();
+                    // Подготовка данных для разных форматов
+                    let mut jrows = Vec::new();
+                    let mut col_data: Map<String, Value> = Map::new();
 
                     for el in v.results.bindings {
                         let mut skip_row = false;
-                        let mut jrow = if format == ResultFormat::Full {
-                            Value::from(serde_json::Map::new())
-                        } else {
-                            Value::Array(vec![])
-                        };
+                        let mut jrow = Map::new();
+                        let mut row_vec = Vec::new();
+
                         for var in &v.head.vars {
                             let r = &el[var];
-                            if let (Some(r_type), Some(r_data), r_datatype) = (r.get("type"), r.get("value"), r.get("datatype")) {
-                                match (r_type.as_str(), r_data.as_str()) {
+                            if let (Some(r_type), Some(r_value), r_datatype) = (r.get("type"), r.get("value"), r.get("datatype")) {
+                                let processed_value = match (r_type.as_str(), r_value.as_str()) {
                                     (Some("uri"), Some(data)) => {
                                         let iri = split_full_prefix(data);
                                         let prefix = get_short_prefix(iri.0, &prefix_cache);
                                         let short_iri = format!("{prefix}:{}", iri.1);
-
                                         if authorization_level == AuthorizationLevel::Cell || authorization_level == AuthorizationLevel::RowColumn {
                                             if az.lock().await.authorize(&short_iri, user_uri, Access::CanRead as u8, false).unwrap_or(0) == Access::CanRead as u8 {
-                                                jrow[var] = json!(short_iri);
+                                                json!(short_iri)
                                             } else {
                                                 if authorization_level == AuthorizationLevel::Cell {
-                                                    jrow[var] = json!("NotAuthorized");
+                                                    json!("NotAuthorized")
                                                 } else if authorization_level == AuthorizationLevel::RowColumn {
                                                     skip_row = true;
+                                                    Value::Null
+                                                } else {
+                                                    Value::Null
                                                 }
                                             }
                                         } else {
-                                            jrow[var] = json!(short_iri);
+                                            json!(short_iri)
                                         }
                                     },
                                     (Some("literal"), Some(data)) => {
-                                        if let Some(dt) = r_datatype {
-                                            match dt.as_str() {
-                                                Some(XSD_INTEGER) | Some(XSD_INT) | Some(XSD_LONG) => {
-                                                    jrow[var] = json!(data.parse::<i64>().unwrap_or_default());
-                                                },
-                                                Some(XSD_STRING) | Some(XSD_NORMALIZED_STRING) => {
-                                                    jrow[var] = json!(data);
-                                                },
-                                                Some(XSD_BOOLEAN) => {
-                                                    jrow[var] = json!(data.parse::<bool>().unwrap_or_default());
-                                                },
-                                                Some(XSD_DATE_TIME) => {
-                                                    jrow[var] = json!(data);
-                                                },
-                                                Some(XSD_FLOAT) | Some(XSD_DOUBLE) | Some(XSD_DECIMAL) => {
-                                                    jrow[var] = json!(data.parse::<f64>().unwrap_or_default());
-                                                },
-                                                _ => {},
+                                        if let Some(dt) = r_datatype.and_then(|dt| dt.as_str()) {
+                                            match dt {
+                                                XSD_INTEGER | XSD_INT | XSD_LONG => json!(data.parse::<i64>().unwrap_or_default()),
+                                                XSD_STRING | XSD_NORMALIZED_STRING => json!(data),
+                                                XSD_BOOLEAN => json!(data.parse::<bool>().unwrap_or_default()),
+                                                XSD_DATE_TIME => json!(data),
+                                                XSD_FLOAT | XSD_DOUBLE | XSD_DECIMAL => json!(data.parse::<f64>().unwrap_or_default()),
+                                                _ => json!(data), // Для неопознанных типов данных просто возвращаем строку
                                             }
                                         } else {
-                                            jrow[var] = json!(data);
+                                            json!(data) // Если тип данных не указан, возвращаем как строку
                                         }
                                     },
-                                    _ => {
-                                        error!("unknown type: {:?}", r_type.as_str());
-                                    },
+                                    _ => Value::Null, // Для неизвестных или необработанных типов
+                                };
+
+                                if !skip_row {
+                                    match format {
+                                        ResultFormat::Full => {
+                                            jrow.insert(var.clone(), processed_value);
+                                        },
+                                        ResultFormat::Rows => {
+                                            row_vec.push(processed_value);
+                                        },
+                                        ResultFormat::Cols => {
+                                            col_data.entry(var.clone()).or_insert_with(|| Value::Array(Vec::new())).as_array_mut().unwrap().push(processed_value);
+                                        },
+                                    }
                                 }
-                                debug!("type={r_type:?}, value={r_data}");
                             }
                         }
+
                         if !skip_row {
-                            jrows.push(jrow);
+                            match format {
+                                ResultFormat::Full => jrows.push(Value::Object(jrow)),
+                                ResultFormat::Rows => jrows.push(Value::Array(row_vec)),
+                                _ => (), // Для C
+
+                                         //ols финальная обработка ниже
+                            }
                         }
                     }
 
-                    jres["rows"] = Value::Array(jrows);
+                    match format {
+                        ResultFormat::Full | ResultFormat::Rows => {
+                            jres["cols"] = json!(v_cols);
+                            jres["rows"] = json!(jrows);
+                        },
+                        ResultFormat::Cols => {
+                            let cols = col_data.into_iter().map(|(k, v)| (k, json!(v))).collect::<Map<_, _>>();
+                            jres = json!(cols);
+                        },
+                    }
                 },
-                Err(e) => {
-                    error!("{:?}", e);
-                },
+                Err(e) => return Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
             },
-            Err(e) => {
-                error!("{:?}", e);
-            },
+            Err(e) => return Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
         }
 
         Ok(jres)

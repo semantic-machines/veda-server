@@ -9,10 +9,14 @@ use async_std::fs::File;
 use async_std::path::PathBuf;
 use async_std::prelude::*;
 use base64::encode;
+use basen::BASE36;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use openssl::sha::Sha256;
 use rand::rngs::OsRng;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::Client;
 use rsa::pkcs8::{FromPrivateKey, FromPublicKey};
 use rsa::{PaddingScheme, PublicKey};
 use serde::Deserialize;
@@ -20,11 +24,7 @@ use serde_json::json;
 use std::io;
 use std::sync::Arc;
 use std::time::Instant;
-use basen::BASE36;
 use v_common::storage::async_storage::AStorage;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use reqwest::Client;
-use openssl::sha::Sha256;
 
 #[derive(Debug, Deserialize)]
 struct AuthResponse {

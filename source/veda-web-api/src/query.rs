@@ -9,6 +9,7 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use std::io;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
@@ -92,6 +93,26 @@ async fn query(
     }
 }
 
+#[derive(Debug, PartialEq, EnumString)]
+pub enum AuthorizationLevel {
+    #[strum(ascii_case_insensitive)]
+    Query,
+    #[strum(ascii_case_insensitive)]
+    Cell,
+    #[strum(ascii_case_insensitive, serialize = "row-column")]
+    RowColumn,
+}
+
+#[derive(Debug, PartialEq, EnumString)]
+pub enum ResultFormat {
+    #[strum(ascii_case_insensitive)]
+    Rows,
+    #[strum(ascii_case_insensitive)]
+    Cols,
+    #[strum(ascii_case_insensitive)]
+    Full,
+}
+
 async fn stored_query(
     uinf: UserInfo,
     data: &QueryRequest,
@@ -110,7 +131,9 @@ async fn stored_query(
                 return Ok(HttpResponse::new(StatusCode::from_u16(res_code as u16).unwrap()));
             }
 
-            let format = stored_query_indv.get_first_literal("v-s:resultFormat").unwrap_or("full".to_owned());
+            let authorization_level = AuthorizationLevel::from_str(&stored_query_indv.get_first_literal("v-s:authorizationLevel").unwrap_or("query".to_owned()))
+                .unwrap_or(AuthorizationLevel::Query);
+
             if let (Some(source), Some(mut query_string)) = (stored_query_indv.get_first_literal("v-s:source"), stored_query_indv.get_first_literal("v-s:queryString")) {
                 // replace {paramN} to '{paramN}'
                 for pr in &params.get_predicates() {
@@ -120,23 +143,31 @@ async fn stored_query(
                     }
                 }
 
+                let format = ResultFormat::from_str(&if let Some(p) = params.get_first_literal("v-s:resultFormat") {
+                    p
+                } else {
+                    stored_query_indv.get_first_literal("v-s:resultFormat").unwrap_or("full".to_owned())
+                })
+                .unwrap_or(ResultFormat::Full);
+
                 match source.as_str() {
                     "clickhouse" => {
                         if let Ok(sql) = prepare_sql_with_params(&query_string, &mut params, &source) {
                             debug!("{sql}");
-                            let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, &format).await?;
+                            let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, "full").await?;
                             log(Some(&start_time), &uinf, "stored_query", stored_query_id, ResultCode::Ok);
                             return Ok(HttpResponse::Ok().json(res));
                         }
                     },
-                    "oxygraph" => {
+                    "oxigraph" => {
                         if prefix_cache.full2short_r.is_empty() {
                             load_prefixes(&db, &prefix_cache).await;
                         }
 
                         if let Ok(sparql) = prepare_sparql_params(&query_string, &mut params, &prefix_cache) {
                             debug!("{sparql}");
-                            let res = query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, &format, prefix_cache).await?;
+                            let res =
+                                query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, format, authorization_level, &az, prefix_cache).await?;
                             log(Some(&start_time), &uinf, "stored_query", stored_query_id, ResultCode::Ok);
                             return Ok(HttpResponse::Ok().json(res));
                         }
@@ -280,6 +311,7 @@ async fn direct_query(
 }
 
 use regex::Regex;
+use strum_macros::EnumString;
 
 fn replace_word(text: &str, a: &str, b: &str) -> String {
     let a_lower = a.to_lowercase();
