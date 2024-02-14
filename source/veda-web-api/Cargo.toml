@@ -64,6 +64,7 @@ basen = "0.1.0"
 strum = "0.26"
 strum_macros = "0.26"
 version = "3.0.0"
+git-version = "0.3.9"
 
 v_common = { package = "v-common", version = "=0.6.0" }
 #v_common = { package = "v-common", path = "../../../v-common" }

@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::common::{get_ticket, QueryRequest, UserContextCache, UserId, UserInfo, VQLClientConnectType};
+use crate::common::{get_ticket, QueryRequest, StoredQueryRequest, UserContextCache, UserId, UserInfo, VQLClientConnectType};
 use crate::common::{get_user_info, log};
 use crate::sparql_client::SparqlClient;
 use crate::VQLClient;
@@ -8,6 +8,7 @@ use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
+use serde_json::value::Value as JSONValue;
 use std::io;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -80,17 +81,36 @@ async fn query(
     data: &QueryRequest,
     query_endpoints: web::Data<QueryEndpoints>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    _az: web::Data<Mutex<LmdbAzContext>>,
     prefix_cache: web::Data<PrefixesCache>,
 ) -> io::Result<HttpResponse> {
     if uinf.ticket.is_none() {
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotAuthorized as u16).unwrap()));
     }
-    if data.stored_query.is_some() {
-        stored_query(uinf, data, query_endpoints, db, az, prefix_cache).await
-    } else {
-        direct_query(uinf, data, query_endpoints, db, prefix_cache).await
+    direct_query_impl(uinf, data, query_endpoints, db, prefix_cache).await
+}
+
+pub(crate) async fn stored_query(
+    data_0: web::Query<StoredQueryRequest>,
+    data: web::Json<JSONValue>,
+    query_endpoints: web::Data<QueryEndpoints>,
+    ticket_cache: web::Data<UserContextCache>,
+    db: web::Data<AStorage>,
+    az: web::Data<Mutex<LmdbAzContext>>,
+    prefix_cache: web::Data<PrefixesCache>,
+    req: HttpRequest,
+    activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+) -> io::Result<HttpResponse> {
+    let uinf = match get_user_info(data_0.ticket.clone(), &req, &ticket_cache, &db, &activity_sender).await {
+        Ok(u) => u,
+        Err(res) => {
+            return Ok(HttpResponse::new(StatusCode::from_u16(res as u16).unwrap()));
+        },
+    };
+    if uinf.ticket.is_none() {
+        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotAuthorized as u16).unwrap()));
     }
+    stored_query_impl(uinf, data, query_endpoints, db, az, prefix_cache).await
 }
 
 #[derive(Debug, PartialEq, EnumString)]
@@ -113,9 +133,9 @@ pub enum ResultFormat {
     Full,
 }
 
-async fn stored_query(
+async fn stored_query_impl(
     uinf: UserInfo,
-    data: &QueryRequest,
+    data: web::Json<JSONValue>,
     query_endpoints: web::Data<QueryEndpoints>,
     db: web::Data<AStorage>,
     az: web::Data<Mutex<LmdbAzContext>>,
@@ -124,59 +144,62 @@ async fn stored_query(
     let start_time = Instant::now();
     let mut params = Individual::default();
 
-    if let (Some(stored_query_id), Some(v)) = (&data.stored_query, &data.params) {
-        if parse_json_to_individual(v, &mut params) {
-            let (mut stored_query_indv, res_code) = get_individual_from_db(stored_query_id, &uinf.user_id, &db, Some(&az)).await?;
-            if res_code != ResultCode::Ok {
-                return Ok(HttpResponse::new(StatusCode::from_u16(res_code as u16).unwrap()));
+    if parse_json_to_individual(&data, &mut params) {
+        let stored_query_id = if let Some(v) = params.get_first_literal("v-s:storedQuery") {
+            v
+        } else {
+            return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::BadRequest as u16).unwrap()));
+        };
+
+        let (mut stored_query_indv, res_code) = get_individual_from_db(&stored_query_id, &uinf.user_id, &db, Some(&az)).await?;
+        if res_code != ResultCode::Ok {
+            return Ok(HttpResponse::new(StatusCode::from_u16(res_code as u16).unwrap()));
+        }
+
+        let authorization_level = AuthorizationLevel::from_str(&stored_query_indv.get_first_literal("v-s:authorizationLevel").unwrap_or("query".to_owned()))
+            .unwrap_or(AuthorizationLevel::Query);
+
+        if let (Some(source), Some(mut query_string)) = (stored_query_indv.get_first_literal("v-s:source"), stored_query_indv.get_first_literal("v-s:queryString")) {
+            // replace {paramN} to '{paramN}'
+            for pr in &params.get_predicates() {
+                //if pr.starts_with("v-s:param") {
+                let pb = "{".to_owned() + pr + "}";
+                query_string = query_string.replace(&pb, &format!("'{}'", &pr));
+                //}
             }
 
-            let authorization_level = AuthorizationLevel::from_str(&stored_query_indv.get_first_literal("v-s:authorizationLevel").unwrap_or("query".to_owned()))
-                .unwrap_or(AuthorizationLevel::Query);
+            let format = ResultFormat::from_str(&if let Some(p) = params.get_first_literal("v-s:resultFormat") {
+                p
+            } else {
+                stored_query_indv.get_first_literal("v-s:resultFormat").unwrap_or("full".to_owned())
+            })
+            .unwrap_or(ResultFormat::Full);
 
-            if let (Some(source), Some(mut query_string)) = (stored_query_indv.get_first_literal("v-s:source"), stored_query_indv.get_first_literal("v-s:queryString")) {
-                // replace {paramN} to '{paramN}'
-                for pr in &params.get_predicates() {
-                    if pr.starts_with("v-s:param") {
-                        let pb = "{".to_owned() + pr + "}";
-                        query_string = query_string.replace(&pb, &format!("'{}'", &pr));
+            match source.as_str() {
+                "clickhouse" => {
+                    if let Ok(sql) = prepare_sql_with_params(&query_string, &mut params, &source) {
+                        debug!("{sql}");
+                        let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, "full").await?;
+                        log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
+                        return Ok(HttpResponse::Ok().json(res));
                     }
-                }
+                },
+                "oxigraph" => {
+                    if prefix_cache.full2short_r.is_empty() {
+                        load_prefixes(&db, &prefix_cache).await;
+                    }
 
-                let format = ResultFormat::from_str(&if let Some(p) = params.get_first_literal("v-s:resultFormat") {
-                    p
-                } else {
-                    stored_query_indv.get_first_literal("v-s:resultFormat").unwrap_or("full".to_owned())
-                })
-                .unwrap_or(ResultFormat::Full);
-
-                match source.as_str() {
-                    "clickhouse" => {
-                        if let Ok(sql) = prepare_sql_with_params(&query_string, &mut params, &source) {
-                            debug!("{sql}");
-                            let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, "full").await?;
-                            log(Some(&start_time), &uinf, "stored_query", stored_query_id, ResultCode::Ok);
-                            return Ok(HttpResponse::Ok().json(res));
-                        }
-                    },
-                    "oxigraph" => {
-                        if prefix_cache.full2short_r.is_empty() {
-                            load_prefixes(&db, &prefix_cache).await;
-                        }
-
-                        if let Ok(sparql) = prepare_sparql_params(&query_string, &mut params, &prefix_cache) {
-                            debug!("{sparql}");
-                            let res =
-                                query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, format, authorization_level, &az, prefix_cache).await?;
-                            log(Some(&start_time), &uinf, "stored_query", stored_query_id, ResultCode::Ok);
-                            return Ok(HttpResponse::Ok().json(res));
-                        }
-                        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotImplemented as u16).unwrap()));
-                    },
-                    _ => {
-                        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotImplemented as u16).unwrap()));
-                    },
-                }
+                    if let Ok(sparql) = prepare_sparql_params(&query_string, &mut params, &prefix_cache) {
+                        debug!("{sparql}");
+                        let res = query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, format, authorization_level, &az, prefix_cache).await?;
+                        log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
+                        return Ok(HttpResponse::Ok().json(res));
+                    }
+                    return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotImplemented as u16).unwrap()));
+                },
+                _ => {
+                    return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotImplemented as u16).unwrap()));
+                },
             }
         }
     }
@@ -189,7 +212,7 @@ fn add_out_element(id: &str, ctx: &mut Vec<String>) {
     ctx.push(id.to_owned());
 }
 
-async fn direct_query(
+async fn direct_query_impl(
     uinf: UserInfo,
     data: &QueryRequest,
     query_endpoints: web::Data<QueryEndpoints>,

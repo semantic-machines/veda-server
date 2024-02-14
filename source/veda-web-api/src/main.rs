@@ -1,6 +1,4 @@
-#[macro_use]
 extern crate version;
-
 #[macro_use]
 extern crate log;
 
@@ -24,7 +22,7 @@ use crate::common::{db_connector, UserContextCache, VQLClient, VQLClientConnectT
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
-use crate::query::{query_get, query_post, QueryEndpoints};
+use crate::query::{query_get, query_post, stored_query, QueryEndpoints};
 use crate::sparql_client::SparqlClient;
 use crate::update::{add_to_individual, put_individual, put_individuals, remove_from_individual, remove_individual, set_in_individual};
 use crate::user_activity::user_activity_manager;
@@ -42,6 +40,7 @@ use actix_web::{get, guard, head, middleware, web, App, HttpResponse, HttpServer
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::{select, FutureExt};
+use git_version::git_version;
 use ini::Ini;
 use rusty_tarantool::tarantool::ClientConfig;
 use serde_derive::Deserialize;
@@ -89,7 +88,7 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
     let module_name = "WEB_API";
     init_log_with_params(module_name, None, true);
-    info!("{} {}", module_name, version!());
+    info!("{} {} {}", module_name, version!(), git_version!());
 
     let mut tt_config = None;
     if let Some(p) = Module::get_property("db_connection") {
@@ -261,6 +260,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/apps/{app_name}").route(web::get().to(apps_doc)))
             .service(web::resource("/files").route(web::post().to(save_file)))
             .service(web::resource("/query").route(web::get().to(query_get)).route(web::post().to(query_post)))
+            .service(web::resource("/stored_query").route(web::post().to(stored_query)))
             .service(web::resource("/authenticate").route(web::get().to(authenticate_get)).route(web::post().to(authenticate_post)))
             .service(
                 web::scope("/webdav")

@@ -158,6 +158,10 @@ pub(crate) struct QueryRequest {
     pub from: Option<i32>,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct StoredQueryRequest {
+    pub ticket: Option<String>,
+}
 pub(crate) fn get_module_name(id: u64) -> &'static str {
     match id {
         1 => "subject_manager",
