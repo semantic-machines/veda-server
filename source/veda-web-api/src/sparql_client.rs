@@ -124,8 +124,8 @@ impl SparqlClient {
                         for var in &v.head.vars {
                             let r = &el[var];
                             debug!("var={}", var);
-                            if let (Some(r_type), Some(r_value), r_datatype) = (r.get("type"), r.get("value"), r.get("datatype")) {
-                                let processed_value = match (r_type.as_str(), r_value.as_str()) {
+                            let processed_value = if let (Some(r_type), Some(r_value), r_datatype) = (r.get("type"), r.get("value"), r.get("datatype")) {
+                                match (r_type.as_str(), r_value.as_str()) {
                                     (Some("uri"), Some(data)) => {
                                         let iri = split_full_prefix(data);
                                         let prefix = get_short_prefix(iri.0, &prefix_cache);
@@ -162,25 +162,22 @@ impl SparqlClient {
                                         }
                                     },
                                     _ => Value::Null, // Для неизвестных или необработанных типов
-                                };
-                                debug!("processed_value={}", processed_value);
-
-                                if !skip_row {
-                                    match format {
-                                        ResultFormat::Full => {
-                                            jrow.insert(var.clone(), processed_value);
-                                        },
-                                        ResultFormat::Rows => {
-                                            row_vec.push(processed_value);
-                                        },
-                                        ResultFormat::Cols => {
-                                            col_data.entry(var.clone()).or_insert_with(|| Value::Array(Vec::new())).as_array_mut().unwrap().push(processed_value);
-                                        },
-                                    }
                                 }
                             } else {
-                                if format == ResultFormat::Cols {
-                                    col_data.entry(var.clone()).or_insert_with(|| Value::Array(Vec::new())).as_array_mut().unwrap().push(Value::Null);
+                                Value::Null
+                            };
+                            debug!("processed_value={}", processed_value);
+                            if !skip_row {
+                                match format {
+                                    ResultFormat::Full => {
+                                        jrow.insert(var.clone(), processed_value);
+                                    },
+                                    ResultFormat::Rows => {
+                                        row_vec.push(processed_value);
+                                    },
+                                    ResultFormat::Cols => {
+                                        col_data.entry(var.clone()).or_insert_with(|| Value::Array(Vec::new())).as_array_mut().unwrap().push(processed_value);
+                                    },
                                 }
                             }
                         }
