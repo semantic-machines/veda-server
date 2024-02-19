@@ -1,5 +1,5 @@
 use crate::common::SparqlResponse;
-use crate::query::{AuthorizationLevel, ResultFormat};
+use crate::query::AuthorizationLevel;
 use actix_web::web;
 use awc::Client;
 use futures::lock::Mutex;
@@ -11,7 +11,7 @@ use stopwatch::Stopwatch;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::module_impl::Module;
 use v_common::onto::{XSD_BOOLEAN, XSD_DATE_TIME, XSD_DECIMAL, XSD_DOUBLE, XSD_FLOAT, XSD_INT, XSD_INTEGER, XSD_LONG, XSD_NORMALIZED_STRING, XSD_STRING};
-use v_common::search::common::{get_short_prefix, load_prefixes, split_full_prefix, PrefixesCache, QueryResult};
+use v_common::search::common::{get_short_prefix, load_prefixes, split_full_prefix, PrefixesCache, QueryResult, ResultFormat};
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext};

@@ -19,7 +19,7 @@ use v_common::onto::individual::Individual;
 use v_common::onto::json2individual::parse_json_to_individual;
 use v_common::onto::onto_index::OntoIndex;
 use v_common::search::clickhouse_client::CHClient;
-use v_common::search::common::{load_prefixes, FTQuery, PrefixesCache, QueryResult};
+use v_common::search::common::{load_prefixes, FTQuery, PrefixesCache, QueryResult, ResultFormat};
 use v_common::search::sparql_params::prepare_sparql_params;
 use v_common::search::sql_params::prepare_sql_with_params;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
@@ -123,16 +123,6 @@ pub enum AuthorizationLevel {
     RowColumn,
 }
 
-#[derive(Debug, PartialEq, EnumString)]
-pub enum ResultFormat {
-    #[strum(ascii_case_insensitive)]
-    Rows,
-    #[strum(ascii_case_insensitive)]
-    Cols,
-    #[strum(ascii_case_insensitive)]
-    Full,
-}
-
 async fn stored_query_impl(
     uinf: UserInfo,
     data: web::Json<JSONValue>,
@@ -168,7 +158,7 @@ async fn stored_query_impl(
                 //}
             }
 
-            let format = ResultFormat::from_str(&if let Some(p) = params.get_first_literal("v-s:resultFormat") {
+            let result_format = ResultFormat::from_str(&if let Some(p) = params.get_first_literal("v-s:resultFormat") {
                 p
             } else {
                 stored_query_indv.get_first_literal("v-s:resultFormat").unwrap_or("full".to_owned())
@@ -179,7 +169,7 @@ async fn stored_query_impl(
                 "clickhouse" => {
                     if let Ok(sql) = prepare_sql_with_params(&query_string, &mut params, &source) {
                         debug!("{sql}");
-                        let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, "full").await?;
+                        let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, result_format).await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
                         return Ok(HttpResponse::Ok().json(res));
                     }
@@ -191,7 +181,8 @@ async fn stored_query_impl(
 
                     if let Ok(sparql) = prepare_sparql_params(&query_string, &mut params, &prefix_cache) {
                         debug!("{sparql}");
-                        let res = query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, format, authorization_level, &az, prefix_cache).await?;
+                        let res =
+                            query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, result_format, authorization_level, &az, prefix_cache).await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
                         return Ok(HttpResponse::Ok().json(res));
                     }
