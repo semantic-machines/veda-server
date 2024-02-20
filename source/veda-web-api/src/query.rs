@@ -150,12 +150,28 @@ async fn stored_query_impl(
             .unwrap_or(AuthorizationLevel::Query);
 
         if let (Some(source), Some(mut query_string)) = (stored_query_indv.get_first_literal("v-s:source"), stored_query_indv.get_first_literal("v-s:queryString")) {
+
             // replace {paramN} to '{paramN}'
             for pr in &params.get_predicates() {
-                //if pr.starts_with("v-s:param") {
-                let pb = "{".to_owned() + pr + "}";
-                query_string = query_string.replace(&pb, &format!("'{}'", &pr));
-                //}
+                if pr == "rdf:type" || pr == "v-s:storedQuery" || pr == "v-s:resultFormat" {
+                    continue;
+                }
+
+                let pattern = format!("{{{}}}", pr);
+                let replacement = format!("'{{{}}}'", pr);
+
+                let mut new_query = String::new();
+                let mut last_end = 0;
+                for mat in query_string.match_indices(&pattern) {
+                    let (start, end) = (mat.0, mat.0 + mat.1.len());
+                    if !((start > 0 && &query_string[start - 1..start] == "'") && (end < query_string.len() && &query_string[end..end + 1] == "'")) {
+                        new_query.push_str(&query_string[last_end..start]);
+                        new_query.push_str(&replacement);
+                        last_end = end;
+                    }
+                }
+                new_query.push_str(&query_string[last_end..]);
+                query_string = new_query;
             }
 
             let result_format = ResultFormat::from_str(&if let Some(p) = params.get_first_literal("v-s:resultFormat") {
