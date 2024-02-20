@@ -196,7 +196,7 @@ async fn stored_query_impl(
                     }
 
                     if let Ok(sparql) = prepare_sparql_params(&query_string, &mut params, &prefix_cache) {
-                        debug!("{sparql}");
+                        info!("{sparql}");
                         let res =
                             query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, result_format, authorization_level, &az, prefix_cache).await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
