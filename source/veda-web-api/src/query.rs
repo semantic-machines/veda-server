@@ -2,7 +2,6 @@
 
 use crate::common::{get_ticket, QueryRequest, StoredQueryRequest, UserContextCache, UserId, UserInfo, VQLClientConnectType};
 use crate::common::{get_user_info, log};
-use crate::sparql_client::SparqlClient;
 use crate::VQLClient;
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
@@ -19,7 +18,7 @@ use v_common::onto::individual::Individual;
 use v_common::onto::json2individual::parse_json_to_individual;
 use v_common::onto::onto_index::OntoIndex;
 use v_common::search::clickhouse_client::CHClient;
-use v_common::search::common::{load_prefixes, FTQuery, PrefixesCache, QueryResult, ResultFormat};
+use v_common::search::common::{load_prefixes, AuthorizationLevel, FTQuery, PrefixesCache, QueryResult, ResultFormat};
 use v_common::search::sparql_params::prepare_sparql_params;
 use v_common::search::sql_params::prepare_sql_with_params;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
@@ -87,7 +86,7 @@ async fn query(
     if uinf.ticket.is_none() {
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotAuthorized as u16).unwrap()));
     }
-    direct_query_impl(uinf, data, query_endpoints, db, prefix_cache).await
+    direct_query_impl(uinf, data, query_endpoints, db, &prefix_cache).await
 }
 
 pub(crate) async fn stored_query(
@@ -111,16 +110,6 @@ pub(crate) async fn stored_query(
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotAuthorized as u16).unwrap()));
     }
     stored_query_impl(uinf, data, query_endpoints, db, az, prefix_cache).await
-}
-
-#[derive(Debug, PartialEq, EnumString)]
-pub enum AuthorizationLevel {
-    #[strum(ascii_case_insensitive)]
-    Query,
-    #[strum(ascii_case_insensitive)]
-    Cell,
-    #[strum(ascii_case_insensitive, serialize = "row-column")]
-    RowColumn,
 }
 
 async fn stored_query_impl(
@@ -150,7 +139,6 @@ async fn stored_query_impl(
             .unwrap_or(AuthorizationLevel::Query);
 
         if let (Some(source), Some(mut query_string)) = (stored_query_indv.get_first_literal("v-s:source"), stored_query_indv.get_first_literal("v-s:queryString")) {
-
             // replace {paramN} to '{paramN}'
             for pr in &params.get_predicates() {
                 if pr == "rdf:type" || pr == "v-s:storedQuery" || pr == "v-s:resultFormat" {
@@ -185,7 +173,7 @@ async fn stored_query_impl(
                 "clickhouse" => {
                     if let Ok(sql) = prepare_sql_with_params(&query_string, &mut params, &source) {
                         info!("{sql}");
-                        let res = query_endpoints.ch_client.lock().await.query_select_async(&sql, result_format).await?;
+                        let res = query_endpoints.ch_client.lock().await.query_select_async(&uinf.user_id, &sql, result_format, authorization_level, &az).await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
                         return Ok(HttpResponse::Ok().json(res));
                     }
@@ -197,8 +185,12 @@ async fn stored_query_impl(
 
                     if let Ok(sparql) = prepare_sparql_params(&query_string, &mut params, &prefix_cache) {
                         info!("{sparql}");
-                        let res =
-                            query_endpoints.sparql_client.lock().await.query_select(&uinf.user_id, sparql, result_format, authorization_level, &az, prefix_cache).await?;
+                        let res = query_endpoints
+                            .sparql_client
+                            .lock()
+                            .await
+                            .query_select(&uinf.user_id, sparql, result_format, authorization_level, &az, &prefix_cache)
+                            .await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
                         return Ok(HttpResponse::Ok().json(res));
                     }
@@ -224,13 +216,16 @@ async fn direct_query_impl(
     data: &QueryRequest,
     query_endpoints: web::Data<QueryEndpoints>,
     db: web::Data<AStorage>,
-    prefix_cache: web::Data<PrefixesCache>,
+    prefix_cache: &PrefixesCache,
 ) -> io::Result<HttpResponse> {
     let mut res = QueryResult::default();
     let ticket_id = uinf.ticket.clone().unwrap_or_default();
 
     if data.sparql.is_some() {
-        res = query_endpoints.sparql_client.lock().await.query_select_ids(&uinf.user_id, data.sparql.clone().unwrap(), db, prefix_cache).await;
+        if prefix_cache.full2short_r.is_empty() {
+            load_prefixes(&db, &prefix_cache).await;
+        }
+        res = query_endpoints.sparql_client.lock().await.query_select_ids(&uinf.user_id, data.sparql.clone().unwrap(), prefix_cache).await;
     } else if data.sql.is_some() {
         let mut req = FTQuery {
             ticket: String::new(),
@@ -341,7 +336,7 @@ async fn direct_query_impl(
 }
 
 use regex::Regex;
-use strum_macros::EnumString;
+use v_common::search::sparql_client::SparqlClient;
 
 fn replace_word(text: &str, a: &str, b: &str) -> String {
     let a_lower = a.to_lowercase();

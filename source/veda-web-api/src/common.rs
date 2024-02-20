@@ -90,20 +90,6 @@ pub async fn get_user_info(
     })
 }
 
-#[derive(Serialize, Deserialize)]
-pub(crate) struct SparqlResponse {
-    pub head: Head,
-    pub results: Bindings,
-}
-#[derive(Serialize, Deserialize)]
-pub(crate) struct Head {
-    pub vars: Vec<String>,
-}
-#[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct Bindings {
-    pub bindings: Vec<Value>,
-}
-
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct GetTicketTrustedRequest {
     pub ticket: String,
