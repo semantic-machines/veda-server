@@ -15,6 +15,9 @@ impl App {
 
         let tg = self.get_tg_dest();
         for (name, process) in self.started_modules.iter_mut() {
+            if name.is_empty() {
+                continue;
+            }
             let mut need_check = true;
             let (mut is_ok, memory) = is_ok_process(&mut sys, process.id());
 
@@ -95,6 +98,10 @@ impl App {
             } else {
                 info!("process {} does not exist in the configuration, it will be killed", name);
                 stop_process(process.id() as i32, name);
+                let (is_run, _mem) = is_ok_process(&mut sys,process.id());
+                if !is_run {
+                    *name = String::new();
+                }
             }
 
             new_config_modules.remove(name);
