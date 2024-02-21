@@ -19,6 +19,7 @@ use v_common::onto::json2individual::parse_json_to_individual;
 use v_common::onto::onto_index::OntoIndex;
 use v_common::search::clickhouse_client::CHClient;
 use v_common::search::common::{load_prefixes, AuthorizationLevel, FTQuery, PrefixesCache, QueryResult, ResultFormat};
+use v_common::search::sparql_client::SparqlClient;
 use v_common::search::sparql_params::prepare_sparql_params;
 use v_common::search::sql_params::prepare_sql_with_params;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
@@ -240,13 +241,10 @@ async fn direct_query_impl(
         };
         log(None, &uinf, "query", &format!("{}, top = {}, limit = {}, from = {}", &req.query, req.top, req.limit, req.from), ResultCode::Ok);
 
-        //warn! forced measure, as library sqlparser does not handle the FINAL keyword
-        req.query = replace_word(&req.query, "final", " join 'clickhouse-final' ");
-
         match prepare_sql_with_params(&req.query.replace('`', "\""), &mut Individual::default(), "clickhouse") {
             Ok(sql) => {
                 //info!("{sql}");
-                req.query = sql.replace("JOIN 'clickhouse-final'", " FINAL ");
+                req.query = sql;
                 res = query_endpoints.ch_client.lock().await.select_async(req, OptAuthorize::YES).await?;
             },
             Err(e) => {
@@ -333,33 +331,4 @@ async fn direct_query_impl(
 
         Ok(HttpResponse::new(StatusCode::from_u16(res.result_code as u16).unwrap()))
     }
-}
-
-use regex::Regex;
-use v_common::search::sparql_client::SparqlClient;
-
-fn replace_word(text: &str, a: &str, b: &str) -> String {
-    let a_lower = a.to_lowercase();
-    let re = Regex::new(r"[\w']+").unwrap();
-    let mut replaced_text = String::new();
-    let mut last_end = 0;
-
-    for word_match in re.find_iter(text) {
-        let (start, end) = (word_match.start(), word_match.end());
-        let word = &text[start..end];
-        let word_lower = word.to_lowercase();
-
-        if word_lower == a_lower {
-            replaced_text.push_str(&text[last_end..start]);
-            replaced_text.push_str(b);
-        } else {
-            replaced_text.push_str(&text[last_end..end]);
-        }
-
-        last_end = end;
-    }
-
-    replaced_text.push_str(&text[last_end..]);
-
-    replaced_text
 }
