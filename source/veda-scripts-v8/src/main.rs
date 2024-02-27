@@ -4,7 +4,10 @@ extern crate lazy_static;
 extern crate log;
 #[macro_use]
 extern crate scan_fmt;
+#[macro_use]
+extern crate version;
 
+use git_version::git_version;
 use std::sync::Mutex;
 use std::{env, thread, time};
 use v_v8::callback::*;
@@ -68,7 +71,10 @@ pub struct MyContext<'a> {
 }
 
 fn main() -> Result<(), i32> {
-    init_log("SCRIPT_V8");
+    let module_name = "SCRIPT_V8";
+
+    init_log(module_name);
+    info!("{} {} {}", module_name, version!(), git_version!());
     thread::spawn(move || inproc_storage_manager());
 
     let _setup_guard = setup();
