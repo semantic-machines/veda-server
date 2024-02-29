@@ -1,3 +1,5 @@
+extern crate version;
+
 #[macro_use]
 extern crate log;
 
@@ -16,6 +18,8 @@ use v_common::module::veda_backend::Backend;
 use v_common::onto::onto_index::OntoIndex;
 use v_common::search::common::FTQuery;
 use v_common::v_api::obj::*;
+use version::version;
+use git_version::git_version;
 
 const TIMEOUT_INFO: u64 = 10;
 const TIMEOUT_RECV: u64 = 30;
@@ -24,6 +28,8 @@ const TIMEOUT_SEND: u64 = 60;
 fn main() {
     init_log("FT_QUERY");
     let mut module_name = "ft-query".to_owned();
+    info!("{} {} {}", module_name, version!(), git_version!());
+
     let mut query_url = Module::get_property("ft_query_service_url").expect("param [search_query_url] not found in veda.properties");
 
     let args: Vec<String> = env::args().collect();
