@@ -8,8 +8,9 @@ extern crate scan_fmt;
 extern crate version;
 
 use git_version::git_version;
+use std::process::exit;
 use std::sync::Mutex;
-use std::{env, thread, time};
+use std::{env, io, thread, time};
 use v_v8::callback::*;
 use v_v8::common::{is_filter_pass, HashVec, ScriptInfo, ScriptInfoContext};
 use v_v8::scripts_workplace::ScriptsWorkPlace;
@@ -153,7 +154,10 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
         info!("use VM id = {} -> {}", process_name, ctx.vm_id);
 
         ctx.workplace.load_ext_scripts(&ctx.sys_ticket);
-        load_event_scripts(&mut ctx.workplace, &mut ctx.xr);
+        if let Err(e) = load_event_scripts(&mut ctx.workplace, &mut ctx.xr) {
+            error!("fail read event scripts, err={:?}", e);
+            exit(-1);
+        }
 
         let mut module = Module::default();
 
@@ -410,8 +414,11 @@ var queue_elements_count = get_env_num_var ('$queue_elements_count');
 var queue_elements_processed = get_env_num_var ('$queue_elements_processed');
 var _event_id = '?';";
 
-pub(crate) fn load_event_scripts(wp: &mut ScriptsWorkPlace<ScriptInfoContext>, xr: &mut XapianReader) {
+pub(crate) fn load_event_scripts(wp: &mut ScriptsWorkPlace<ScriptInfoContext>, xr: &mut XapianReader) -> io::Result<()> {
     let res = xr.query(FTQuery::new_with_user("cfg:VedaSystem", "'rdf:type' === 'v-s:Event'"), &mut wp.backend.storage);
+    if res.result_code != ResultCode::Ok {
+        return Err(io::Error::new(io::ErrorKind::Other, format!("{:?}", res.result_code)));
+    }
 
     let mut scripts_ids = vec![];
     if res.result_code == ResultCode::Ok && res.count > 0 {
@@ -428,6 +435,7 @@ pub(crate) fn load_event_scripts(wp: &mut ScriptsWorkPlace<ScriptInfoContext>, x
     }
 
     info!("load scripts from storage: {:?}", wp.scripts_order);
+    Ok(())
 }
 
 pub(crate) fn prepare_script(wp: &mut ScriptsWorkPlace<ScriptInfoContext>, ev_indv: &mut Individual) {
