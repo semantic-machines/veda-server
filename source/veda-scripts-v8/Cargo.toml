@@ -14,5 +14,5 @@ scan_fmt = "0.2.6"
 version = "3.0.0"
 git-version = "0.3.9"
 
-v_v8 = { package = "v-common-v8", version = "=0.1.127" }
+v_v8 = { package = "v-common-v8", version = "=0.1.128" }
 #v_v8 = { package = "v-common-v8", path = "../../../v-common-v8" }

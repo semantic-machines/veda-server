@@ -25,7 +25,7 @@ use v_v8::v_common::module::remote_indv_r_storage::inproc_storage_manager;
 use v_v8::v_common::module::veda_backend::Backend;
 use v_v8::v_common::onto::individual::Individual;
 use v_v8::v_common::onto::onto_impl::Onto;
-use v_v8::v_common::search::common::FTQuery;
+use v_v8::v_common::search::common::{FTQuery, QueryResult};
 use v_v8::v_common::storage::common::StorageMode;
 use v_v8::v_common::v_api::api_client::{IndvOp, MStorageClient};
 use v_v8::v_common::v_api::obj::ResultCode;
@@ -415,9 +415,15 @@ var queue_elements_processed = get_env_num_var ('$queue_elements_processed');
 var _event_id = '?';";
 
 pub(crate) fn load_event_scripts(wp: &mut ScriptsWorkPlace<ScriptInfoContext>, xr: &mut XapianReader) -> io::Result<()> {
-    let res = xr.query(FTQuery::new_with_user("cfg:VedaSystem", "'rdf:type' === 'v-s:Event'"), &mut wp.backend.storage);
-    if res.result_code != ResultCode::Ok {
-        return Err(io::Error::new(io::ErrorKind::Other, format!("{:?}", res.result_code)));
+    let mut res = QueryResult::default();
+    res.result_code = ResultCode::NotReady;
+    while res.result_code == ResultCode::NotReady || res.result_code == ResultCode::DatabaseModifiedError {
+        res = xr.query(FTQuery::new_with_user("cfg:VedaSystem", "'rdf:type' === 'v-s:Event'"), &mut wp.backend.storage);
+        if res.result_code == ResultCode::InternalServerError {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("{:?}", res.result_code)));
+        }
+        warn!("fail read event scripts, sleep and repeat...");
+        thread::sleep(time::Duration::from_secs(3));
     }
 
     let mut scripts_ids = vec![];
