@@ -1,6 +1,6 @@
 [package]
 name = "veda-auth"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Itiua <ValeriyBushenev@gmail.com>"]
 edition = "2021"
 
@@ -17,6 +17,8 @@ parse_duration = "2.1.1"
 ring = "0.16.20"
 data-encoding = "2.4.0"
 mustache = "0.9.0"
+version = "3.0.0"
+git-version = "0.3.9"
 
-v_common = { package = "v-common", version = "=0.4.54" }
+v_common = { package = "v-common", version = "=0.7.1" }
 #v_common = { package = "v-common", path = "../../../v-common" }

@@ -7,7 +7,7 @@ use ring::{digest, pbkdf2, rand};
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use uuid::Uuid;
-use v_common::az_impl::common::f_authorize;
+use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::module_impl::Module;
 use v_common::module::ticket::Ticket;
@@ -19,7 +19,7 @@ use v_common::search::common::{FTQuery, QueryResult};
 use v_common::storage::common::{StorageId, VStorage};
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::{OptAuthorize, ResultCode};
-use v_common::v_authorization::common::Trace;
+use v_common::v_authorization::common::{AuthorizationContext, Trace};
 
 pub const EMPTY_SHA256_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 pub const ALLOW_TRUSTED_GROUP: &str = "cfg:TrustedAuthenticationUserGroup";
@@ -66,13 +66,13 @@ impl Default for AuthConf {
     }
 }
 
-pub(crate) fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&str>, backend: &mut Backend, backup_storage: &mut VStorage) -> Ticket {
+pub(crate) fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&str>, backend: &mut Backend) -> Ticket {
     let tr_ticket_id = tr_ticket_id.unwrap_or_default();
     let mut ticket_obj = backend.get_ticket_from_db(tr_ticket_id);
     if ticket_obj.result == ResultCode::Ok {
         ticket_obj.end_time = Utc::now().timestamp();
 
-        if store(&ticket_obj.to_individual(), &mut backend.storage, backup_storage) {
+        if store(&ticket_obj.to_individual(), &mut backend.storage) {
             let end_time_str = if let Some(end_time_naive) = NaiveDateTime::from_timestamp_opt(ticket_obj.end_time, 0) {
                 format!("{:?}", end_time_naive)
             } else {
@@ -102,8 +102,8 @@ pub(crate) fn get_ticket_trusted(
     ip: Option<&str>,
     xr: &mut XapianReader,
     backend: &mut Backend,
-    backup_storage: &mut VStorage,
     auth_data: &mut VStorage,
+    az: &mut LmdbAzContext,
 ) -> Ticket {
     let tr_ticket_id = tr_ticket_id.unwrap_or_default();
     let mut tr_ticket = backend.get_ticket_from_db(tr_ticket_id);
@@ -137,7 +137,7 @@ pub(crate) fn get_ticket_trusted(
             str_num: 0,
         };
 
-        match f_authorize(&tr_ticket.user_uri, &tr_ticket.user_uri, 15, true, Some(&mut trace)) {
+        match az.authorize_and_trace(&tr_ticket.user_uri, &tr_ticket.user_uri, 15, true, &mut trace) {
             Ok(_res) => {
                 for gr in trace.group.split('\n') {
                     if gr == ALLOW_TRUSTED_GROUP {
@@ -181,7 +181,7 @@ pub(crate) fn get_ticket_trusted(
                         } else {
                             "127.0.0.1"
                         };
-                        create_new_ticket(login, &check_user_id, addr, conf.ticket_lifetime, &mut ticket, &mut backend.storage, backup_storage);
+                        create_new_ticket(login, &check_user_id, addr, conf.ticket_lifetime, &mut ticket, &mut backend.storage);
                         info!("trusted authenticate, result ticket = {:?}", ticket);
 
                         return ticket;
@@ -352,7 +352,7 @@ pub(crate) fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
     res
 }
 
-pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration: i64, ticket: &mut Ticket, storage: &mut VStorage, backup_storage: &mut VStorage) {
+pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration: i64, ticket: &mut Ticket, storage: &mut VStorage) {
     if addr.parse::<IpAddr>().is_err() {
         error!("fail create_new_ticket: invalid ip {}", addr);
         return;
@@ -384,7 +384,7 @@ pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration
 
     ticket_indv.add_string("ticket:duration", &duration.to_string(), Lang::none());
 
-    if store(&ticket_indv, storage, backup_storage) {
+    if store(&ticket_indv, storage) {
         ticket.update_from_individual(&mut ticket_indv);
         ticket.result = ResultCode::Ok;
         ticket.start_time = (TICKS_TO_UNIX_EPOCH + now.timestamp_millis()) * 10_000;
@@ -397,16 +397,16 @@ pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration
     }
 }
 
-pub(crate) fn create_sys_ticket(storage: &mut VStorage, backup_storage: &mut VStorage) -> Ticket {
+pub(crate) fn create_sys_ticket(storage: &mut VStorage) -> Ticket {
     let mut ticket = Ticket::default();
-    create_new_ticket("veda", "cfg:VedaSystem", "127.0.0.1", 90_000_000, &mut ticket, storage, backup_storage);
+    create_new_ticket("veda", "cfg:VedaSystem", "127.0.0.1", 90_000_000, &mut ticket, storage);
 
     if ticket.result == ResultCode::Ok {
         let mut sys_ticket_link = Individual::default();
         sys_ticket_link.set_id("systicket");
         sys_ticket_link.add_uri("rdf:type", "rdfs:Resource");
         sys_ticket_link.add_uri("v-s:resource", &ticket.id);
-        if store(&sys_ticket_link, storage, backup_storage) {
+        if store(&sys_ticket_link, storage) {
             return ticket;
         } else {
             error!("fail store system ticket link")
@@ -418,16 +418,9 @@ pub(crate) fn create_sys_ticket(storage: &mut VStorage, backup_storage: &mut VSt
     ticket
 }
 
-fn store(ticket_indv: &Individual, storage: &mut VStorage, backup_storage: &mut VStorage) -> bool {
+fn store(ticket_indv: &Individual, storage: &mut VStorage) -> bool {
     let mut raw1: Vec<u8> = Vec::new();
     if to_msgpack(ticket_indv, &mut raw1).is_ok() {
-        if !backup_storage.is_empty() {
-            if backup_storage.put_kv_raw(StorageId::Tickets, ticket_indv.get_id(), raw1.clone()) {
-                info!("success store {} to backup database", ticket_indv.get_id());
-            } else {
-                warn!("fail store {} to backup database", ticket_indv.get_id());
-            }
-        }
         if storage.put_kv_raw(StorageId::Tickets, ticket_indv.get_id(), raw1) {
             return true;
         }
