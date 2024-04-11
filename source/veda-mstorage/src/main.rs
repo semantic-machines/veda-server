@@ -1,10 +1,13 @@
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate version;
 
 mod transaction;
 
 use crate::transaction::{Transaction, TransactionItem};
 use chrono::Utc;
+use git_version::git_version;
 use nng::{Message, Protocol, Socket};
 use serde_json::json;
 use serde_json::value::Value as JSONValue;
@@ -13,7 +16,7 @@ use std::net::IpAddr;
 use std::str;
 use std::thread::sleep;
 use std::time::Duration;
-use v_common::az_impl::common::f_authorize;
+use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::ticket::Ticket;
@@ -25,7 +28,7 @@ use v_common::onto::parser::parse_raw;
 use v_common::storage::common::{StorageId, StorageMode, VStorage};
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::*;
-use v_common::v_authorization::common::{Access, Trace};
+use v_common::v_authorization::common::{Access, AuthorizationContext};
 use v_common::v_queue::queue::Queue;
 use v_common::v_queue::record::Mode;
 
@@ -38,12 +41,14 @@ struct Context {
     queue_out: Queue,
     mstorage_info: ModuleInfo,
     tickets_cache: HashMap<String, Ticket>,
+    az: LmdbAzContext,
 }
 
 // main function
 fn main() -> std::io::Result<()> {
-    // initialize logging for MSTORAGE
-    init_log("MSTORAGE");
+    let module_name = "MSTORAGE";
+    init_log(module_name);
+    info!("{} {} {}", module_name, version!(), git_version!());
 
     // set the base path to "./data"
     let base_path = "./data";
@@ -140,12 +145,15 @@ fn main() -> std::io::Result<()> {
     // log the op_id that the server started with
     info!("started with op_id = {}", op_id);
 
+    let az = LmdbAzContext::new(10000);
+
     // create a new Context object with the initialized variables
     let mut ctx = Context {
         primary_storage,
         queue_out,
         mstorage_info,
         tickets_cache,
+        az,
     };
 
     // main loop
@@ -296,7 +304,7 @@ fn request_prepare(ctx: &mut Context, sys_ticket: &Ticket, op_id: &mut i64, requ
                 return Err(ResultCode::InternalServerError);
             } else {
                 // Call the operation_prepare function with the current command, individual, and other parameters.
-                let resp = operation_prepare(cmd.clone(), op_id, &mut indv, &mut ctx.primary_storage, sys_ticket, &mut transaction);
+                let resp = operation_prepare(cmd.clone(), op_id, &mut indv, sys_ticket, &mut transaction, ctx);
                 if resp.res != ResultCode::Ok {
                     return Err(resp.res);
                 }
@@ -321,14 +329,7 @@ fn request_prepare(ctx: &mut Context, sys_ticket: &Ticket, op_id: &mut i64, requ
 // It takes in several parameters such as the command to perform, the ID of the operation,
 // a reference to a mutable individual object, a primary storage object, a system ticket object,
 // and a reference to a mutable transaction object.
-fn operation_prepare(
-    cmd: IndvOp,
-    op_id: &mut i64,
-    new_indv: &mut Individual,
-    primary_storage: &mut VStorage,
-    sys_ticket: &Ticket,
-    transaction: &mut Transaction,
-) -> Response {
+fn operation_prepare(cmd: IndvOp, op_id: &mut i64, new_indv: &mut Individual, sys_ticket: &Ticket, transaction: &mut Transaction, ctx: &mut Context) -> Response {
     // Check if authorization is required
     let is_need_authorize = sys_ticket.user_uri != transaction.ticket.user_uri;
 
@@ -346,7 +347,7 @@ fn operation_prepare(
 
     // Get the previous state and individual information
     let mut prev_indv = Individual::default();
-    let prev_state = primary_storage.get_raw_value(StorageId::Individuals, new_indv.get_id());
+    let prev_state = ctx.primary_storage.get_raw_value(StorageId::Individuals, new_indv.get_id());
 
     // If a previous state exists, parse and retrieve it
     if !prev_state.is_empty() {
@@ -371,23 +372,12 @@ fn operation_prepare(
         return Response::new(new_indv.get_id(), ResultCode::FailStore, -1, -1);
     }
 
-    // Create a new trace object to store ACL, group, info, and str_num
-    let mut trace = Trace {
-        acl: &mut String::new(),
-        is_acl: false,
-        group: &mut String::new(),
-        is_group: false,
-        info: &mut String::new(),
-        is_info: false,
-        str_num: 0,
-    };
-
     // If authorization is required, check if the user has permission to perform the command
     if is_need_authorize {
         // Check if the command is to remove an individual
         if cmd == IndvOp::Remove {
             // Check if the user has authorization to delete the individual
-            if f_authorize(new_indv.get_id(), &transaction.ticket.user_uri, Access::CanDelete as u8, true, Some(&mut trace)).unwrap_or(0) != Access::CanDelete as u8 {
+            if ctx.az.authorize(new_indv.get_id(), &transaction.ticket.user_uri, Access::CanDelete as u8, true).unwrap_or(0) != Access::CanDelete as u8 {
                 // If not authorized, return response with error
                 error!("operation [Remove], Not Authorized, user = {}, request [can delete], uri = {} ", transaction.ticket.user_uri, new_indv.get_id());
                 return Response::new(new_indv.get_id(), ResultCode::NotAuthorized, -1, -1);
@@ -400,8 +390,7 @@ fn operation_prepare(
                     if let Some(prev_is_deleted) = prev_indv.get_first_bool("v-s:deleted") {
                         if !prev_is_deleted
                             && new_is_deleted
-                            && f_authorize(new_indv.get_id(), &transaction.ticket.user_uri, Access::CanDelete as u8, true, Some(&mut trace)).unwrap_or(0)
-                                != Access::CanDelete as u8
+                            && ctx.az.authorize(new_indv.get_id(), &transaction.ticket.user_uri, Access::CanDelete as u8, true).unwrap_or(0) != Access::CanDelete as u8
                         {
                             // If not authorized to delete, return response with error
                             let types = new_indv.get_literals("rdf:type").unwrap_or_default();
@@ -416,7 +405,7 @@ fn operation_prepare(
                     }
                 }
                 // Check if the user has authorization to update the individual
-                if f_authorize(new_indv.get_id(), &transaction.ticket.user_uri, Access::CanUpdate as u8, true, Some(&mut trace)).unwrap_or(0) != Access::CanUpdate as u8 {
+                if ctx.az.authorize(new_indv.get_id(), &transaction.ticket.user_uri, Access::CanUpdate as u8, true).unwrap_or(0) != Access::CanUpdate as u8 {
                     let types = new_indv.get_literals("rdf:type").unwrap_or_default();
                     error!(
                         "failed to update, Not Authorized, user = {}, request [can update], uri = {}, types = {:?}",
@@ -462,7 +451,7 @@ fn operation_prepare(
 
                 // Check for user authorization to create new type
                 for type_id in added_types.iter() {
-                    if f_authorize(type_id, &transaction.ticket.user_uri, Access::CanCreate as u8, true, Some(&mut trace)).unwrap_or(0) != Access::CanCreate as u8 {
+                    if ctx.az.authorize(type_id, &transaction.ticket.user_uri, Access::CanCreate as u8, true).unwrap_or(0) != Access::CanCreate as u8 {
                         // If not authorized to create new type, return response with error
                         error!("failed to update, Not Authorized, user = {}, request [can create], type = {}", transaction.ticket.user_uri, type_id);
                         return Response::new(new_indv.get_id(), ResultCode::NotAuthorized, -1, -1);
