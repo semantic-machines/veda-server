@@ -1,8 +1,16 @@
+/*
+ Реализацию индексатора прав доступа.
+ Процесс индексации прав доступа включает в себя чтение элементов из очереди,
+ извлечение информации о правах доступа из объектов,
+ обновление наборов прав доступа и сохранение обновленных данных в хранилище
+*/
+
 #[macro_use]
 extern crate log;
 
 use crate::common::*;
 use std::{env, thread};
+use v_common::init_module_log;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_cmd, get_inner_binobj_as_individual, init_log, Module, PrepareError};
 use v_common::module::veda_backend::Backend;
@@ -15,7 +23,7 @@ use v_common::v_queue::consumer::Consumer;
 mod common;
 
 fn main() -> Result<(), i32> {
-    init_log("AZ_INDEXER");
+    init_module_log!("AZ_INDEXER");
 
     let mut module = Module::default();
     let mut backend = Backend::create(StorageMode::ReadOnly, false);

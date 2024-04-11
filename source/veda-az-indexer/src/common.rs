@@ -65,6 +65,9 @@ fn get_access_from_individual(state: &mut Individual) -> u8 {
     access
 }
 
+//  - Извлекает информацию о ресурсах, группах и правах доступа из предыдущего и нового состояний объекта.
+//  - Определяет, является ли объект удаленным или восстановленным.
+//  - Вызывает функцию add_or_del_right_sets() для добавления или удаления наборов прав доступа.
 pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual, prd_rsc: &str, prd_in_set: &str, prefix: &str, default_access: u8, ctx: &mut Context) {
     let mut is_drop_count = false;
 
@@ -210,6 +213,10 @@ fn add_or_del_right_sets(
     }
 }
 
+// - Для каждого ресурса формирует ключ на основе префикса, фильтра и идентификатора ресурса.
+// - Получает предыдущий набор прав доступа из кэша или хранилища.
+// - Обновляет набор прав доступа на основе новых данных и флага удаления.
+// - Сохраняет обновленный набор прав доступа в кэше или хранилище.
 fn update_right_set(
     source_id: &str,
     new_data: &RightData,
