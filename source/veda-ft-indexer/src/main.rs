@@ -12,6 +12,7 @@ use std::process;
 use std::time::Instant;
 use v_common::ft_xapian::init_db_path;
 use v_common::ft_xapian::xapian_reader::XapianReader;
+use v_common::init_module_log;
 use v_common::module::common::load_onto;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_cmd, get_info_of_module, get_inner_binobj_as_individual, init_log, wait_load_ontology, wait_module, Module, PrepareError};
@@ -30,7 +31,7 @@ const MODULE_NAME: &str = "FT_INDEXER";
 const MODULE_ID: i64 = 4;
 
 fn main() -> Result<(), XError> {
-    init_log(MODULE_NAME);
+    init_module_log!(MODULE_NAME);
     let mut batch_size = 0;
     loop {
         let mut backend = Backend::create(StorageMode::ReadOnly, false);

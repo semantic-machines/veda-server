@@ -1,14 +1,19 @@
 [package]
 name = "veda-ft-indexer"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["itiu <ValeriyBushenev@gmail.com>"]
 edition = "2021"
 
 [dependencies]
 chrono = "0.4"
 log = "0.4"
-xapian-rusty = "=0.0.53"
+
+version = "3.0.0"
+git-version = "0.3.9"
+
+xapian-rusty = "=0.0.55"
 #xapian-rusty = { path = "../xapian-rusty" }
 
-v_common = { package = "v-common", version = "=0.4.54" }
+
+v_common = { package = "v-common", version = "=0.7.3" }
 #v_common = { package = "v-common", path = "../../../v-common" }
