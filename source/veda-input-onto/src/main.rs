@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::{fmt, fs, io};
 use std::{thread, time as std_time};
+use v_common::init_module_log;
 use v_common::module::common::load_onto;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::init_log;
@@ -49,7 +50,7 @@ impl fmt::Display for Prefixes {
 }
 
 fn main() -> NotifyResult<()> {
-    init_log("INPUT_ONTO");
+    init_module_log!("INPUT_ONTO");
 
     let module_info = ModuleInfo::new("./data", "input-onto", true);
     if module_info.is_err() {
@@ -335,7 +336,7 @@ fn processing_files(files_paths: Vec<PathBuf>, hash_list: &mut HashMap<String, S
     }
 
     for (prefix, full_url) in prefixes.id2namespaces.iter() {
-        if !loaded_owl_ontology.contains(prefix) && !backend.storage.get_individual(prefix, &mut Individual::default()) {
+        if !loaded_owl_ontology.contains(prefix) && backend.storage.get_individual(prefix, &mut Individual::default()) != ResultCode::Ok {
             warn!("prefix not found {}, generate individual", prefix);
             let mut prefix_indv = Individual::default();
             prefix_indv.set_id(prefix);
@@ -393,7 +394,7 @@ fn parse_file(file_path: &str, individuals: &mut HashMap<String, Individual>, pr
         loop {
             for ns in &parser.namespaces {
                 if !prefixes.namespaces2id.contains_key(ns.1) {
-                    if let Some(s) = ns.1.get(0..ns.1.len() - 1) {
+                    if let Some(s) = ns.1.get(0..ns.1.len()) {
                         prefixes.namespaces2id.insert(s.to_owned(), ns.0.clone());
                         prefixes.id2orignamespaces.insert(ns.0.to_owned() + ":", ns.1.to_owned());
                         prefixes.id2namespaces.insert(ns.0.to_owned() + ":", s.to_string());
@@ -524,10 +525,13 @@ fn parse_file(file_path: &str, individuals: &mut HashMap<String, Individual>, pr
 fn to_prefix_form(iri: &str, namespaces2id: &HashMap<String, String>) -> String {
     let mut res = String::default();
 
-    if let Some(s) = namespaces2id.get(iri) {
-        res.push_str(s);
-        res.push(':');
-        return res;
+    let variants = [iri, &(iri.to_owned() + "/"), &(iri.to_owned() + "#")];
+    for variant in variants.iter() {
+        if let Some(s) = namespaces2id.get(*variant) {
+            res.push_str(s);
+            res.push(':');
+            return res;
+        }
     }
 
     let pos = if let Some(pos) = iri.rfind(|c| c == '#' || c == '/') {
@@ -536,7 +540,7 @@ fn to_prefix_form(iri: &str, namespaces2id: &HashMap<String, String>) -> String 
         return iri.to_owned();
     };
 
-    if let Some(s) = iri.get(0..pos) {
+    if let Some(s) = iri.get(0..pos + 1) {
         if let Some(s) = namespaces2id.get(s) {
             res.push_str(s);
             res.push(':');

@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 use v_common::ft_xapian::xapian_reader::XapianReader;
+use v_common::init_module_log;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_info_of_module, get_inner_binobj_as_individual, init_log, wait_load_ontology, wait_module, Module, PrepareError};
 use v_common::module::veda_backend::Backend;
@@ -202,7 +203,7 @@ impl OntologistModule {
 }
 
 fn main() -> std::io::Result<()> {
-    init_log("ONTOLOGIST");
+    init_module_log!("ONTOLOGIST");
     let mut module = Module::new_with_name("ontologist");
 
     let onto_types = vec![
