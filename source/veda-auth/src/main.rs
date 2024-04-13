@@ -2,15 +2,12 @@
 extern crate log;
 #[macro_use]
 extern crate lazy_static;
-#[macro_use]
-extern crate version;
 
 mod auth;
 mod common;
 
 use crate::auth::*;
 use crate::common::{create_sys_ticket, get_ticket_trusted, logout, read_auth_configuration, AuthConf, UserStat};
-use git_version::git_version;
 use nng::options::{Options, RecvTimeout, SendTimeout};
 use nng::{Error, Message, Protocol, Socket};
 use serde_json::json;
@@ -19,6 +16,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
+use v_common::init_module_log;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::veda_backend::Backend;
 use v_common::storage::common::{StorageMode, VStorage};
@@ -27,9 +25,7 @@ const TIMEOUT_RECV: u64 = 30;
 const TIMEOUT_SEND: u64 = 60;
 
 fn main() -> std::io::Result<()> {
-    let module_name = "AUTH";
-    init_log(module_name);
-    info!("{} {} {}", module_name, version!(), git_version!());
+    init_module_log!("AUTH");
 
     let auth_url = Module::get_property("auth_url").expect("param [auth_url] not found in veda.properties");
 

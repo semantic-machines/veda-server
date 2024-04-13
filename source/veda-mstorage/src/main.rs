@@ -1,13 +1,10 @@
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate version;
 
 mod transaction;
 
 use crate::transaction::{Transaction, TransactionItem};
 use chrono::Utc;
-use git_version::git_version;
 use nng::{Message, Protocol, Socket};
 use serde_json::json;
 use serde_json::value::Value as JSONValue;
@@ -17,6 +14,7 @@ use std::str;
 use std::thread::sleep;
 use std::time::Duration;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_common::init_module_log;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::ticket::Ticket;
@@ -46,9 +44,7 @@ struct Context {
 
 // main function
 fn main() -> std::io::Result<()> {
-    let module_name = "MSTORAGE";
-    init_log(module_name);
-    info!("{} {} {}", module_name, version!(), git_version!());
+    init_module_log!("MSTORAGE");
 
     // set the base path to "./data"
     let base_path = "./data";
