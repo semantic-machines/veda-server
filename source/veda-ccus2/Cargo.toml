@@ -1,6 +1,6 @@
 [package]
 name = "veda-ccus2"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Valeriy Bushenev <ValeriyBushenev@gmail.com>"]
 edition = "2021"
 
@@ -19,5 +19,5 @@ time = "0.3.17"
 #evmap = "10.0.2"
 thiserror = "1.0.37"
 
-v_common = { package = "v-common", version = "=0.4.54" }
+v_common = { package = "v-common", version = "=0.7.3" }
 #v_common = { package = "v-common", path = "../../../v-common" }

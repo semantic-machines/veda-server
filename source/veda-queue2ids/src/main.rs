@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 use std::thread;
+use v_common::init_module_log;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_cmd, get_inner_binobj_as_individual, init_log, Module, PrepareError};
 use v_common::module::veda_backend::Backend;
@@ -28,7 +29,7 @@ struct Context {
 }
 
 fn main() -> Result<(), i32> {
-    init_log("QUEUE_2_IDS");
+    init_module_log!("QUEUE_2_IDS");
     // Initialize module and backend
     let mut module = Module::default();
     let mut backend = Backend::create(StorageMode::ReadOnly, false);
