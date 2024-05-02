@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record, update_counters};
 use v_common::module::info::ModuleInfo;
 use v_common::onto::individual::Individual;
 use v_common::storage::common::{StorageId, VStorage};
-use v_common::v_authorization::common::Access;
-use v_common::v_authorization::formats::{decode_rec_to_rightset, encode_rightset, update_counters, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE};
+use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE};
 use v_common::v_authorization::{Right, RightSet};
+use chrono::{DateTime, Utc};
 
 struct RightData<'a> {
     resource: &'a [String],
@@ -68,7 +69,8 @@ fn get_access_from_individual(state: &mut Individual) -> u8 {
 //  - Извлекает информацию о ресурсах, группах и правах доступа из предыдущего и нового состояний объекта.
 //  - Определяет, является ли объект удаленным или восстановленным.
 //  - Вызывает функцию add_or_del_right_sets() для добавления или удаления наборов прав доступа.
-pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual, prd_rsc: &str, prd_in_set: &str, prefix: &str, default_access: u8, ctx: &mut Context) {
+pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual, date: Option<DateTime<Utc>>,
+                        prd_rsc: &str, prd_in_set: &str, prefix: &str, default_access: u8, ctx: &mut Context) {
     let mut is_drop_count = false;
 
     if let Some(b) = new_state.get_first_bool("v-s:dropCount") {
@@ -136,7 +138,7 @@ pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual,
 
     if n_is_del && !p_is_del {
         // IS DELETE
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut HashMap::new(), &Cache::None);
+        add_or_del_right_sets(id, &new_data, &prev_data, date, &aux_data, n_is_del, ctx, &mut HashMap::new(), &Cache::None);
     } else if !n_is_del && p_is_del {
         // IS RESTORE
         let mut cache = HashMap::new();
@@ -144,7 +146,7 @@ pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual,
         //    add_or_sub_right_sets(id, &use_filter, &pre_resc, &pre_in_set, &vec![], &vec![], marker, p_acs, p_acs, true, prefix, ctx, &mut cache, &Cache::Write);
         //}
 
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &Cache::Read);
+        add_or_del_right_sets(id, &new_data, &prev_data, date, &aux_data, false, ctx, &mut cache, &Cache::Read);
     } else if !n_is_del && !p_is_del {
         // IS UPDATE
         let mut cache = HashMap::new();
@@ -155,10 +157,10 @@ pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual,
                 access: p_acs,
             };
 
-            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache, &Cache::None);
+            add_or_del_right_sets(id, &prev_data, &empty_data, date, &aux_data, true, ctx, &mut cache, &Cache::None);
         }
 
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &Cache::Read);
+        add_or_del_right_sets(id, &new_data, &prev_data, date, &aux_data, false, ctx, &mut cache, &Cache::Read);
     }
 }
 
@@ -173,6 +175,7 @@ fn add_or_del_right_sets(
     id: &str,
     new_data: &RightData,
     prev_data: &RightData,
+    date: Option<DateTime<Utc>>,
     aux_data: &AuxData,
     is_deleted: bool,
     ctx: &mut Context,
@@ -189,9 +192,9 @@ fn add_or_del_right_sets(
             access: new_data.access,
         };
 
-        update_right_set(id, &t_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, date, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
     } else {
-        update_right_set(id, new_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, new_data, date, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
     }
 
     if !removed_resource.is_empty() {
@@ -200,7 +203,7 @@ fn add_or_del_right_sets(
             in_set: new_data.in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, date, true, prev_data.access, aux_data, ctx, cache, mode);
     }
 
     if !removed_in_set.is_empty() {
@@ -209,7 +212,7 @@ fn add_or_del_right_sets(
             in_set: &removed_in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, date, true, prev_data.access, aux_data, ctx, cache, mode);
     }
 }
 
@@ -220,6 +223,7 @@ fn add_or_del_right_sets(
 fn update_right_set(
     source_id: &str,
     new_data: &RightData,
+    date: Option<DateTime<Utc>>,
     is_deleted: bool,
     prev_access: u8,
     aux_data: &AuxData,
@@ -277,7 +281,7 @@ fn update_right_set(
             }
         }
 
-        let mut new_record = encode_rightset(new_right_set, ctx.version_of_index_format);
+        let mut new_record = encode_record(date, new_right_set, ctx.version_of_index_format);
 
         if new_record.is_empty() {
             new_record = "X".to_string();

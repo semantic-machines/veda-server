@@ -133,13 +133,14 @@ fn prepare(_module: &mut Backend, ctx: &mut Context, queue_element: &mut Individ
 }
 
 fn prepare_permission_statement(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
-    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx);
+    index_right_sets(prev_state, new_state, None, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx);
 }
 
 fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
     index_right_sets(
         prev_state,
         new_state,
+        None,
         "v-s:resource",
         "v-s:memberOf",
         MEMBERSHIP_PREFIX,
@@ -149,7 +150,7 @@ fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, c
 }
 
 fn prepare_permission_filter(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
-    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx);
+    index_right_sets(prev_state, new_state, None, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx);
 }
 
 fn prepare_account(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
