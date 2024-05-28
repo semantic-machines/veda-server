@@ -1,0 +1,11 @@
+[package]
+name = "veda-stat-collector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nng = "1.0.1"
+chrono = "0.4"
+flate2 = "1.0.28"
+log = "0.4"
+env_logger = "0.9"
