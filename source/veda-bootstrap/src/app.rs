@@ -358,7 +358,7 @@ fn initialize_watchdog_data() -> (HashMap<String, Duration>, HashMap<String, i64
     let mut prev_check_times: HashMap<String, i64> = Default::default();
 
     for n in ["mstorage", "auth"] {
-        if let Some(p) = Module::get_property(&format!("{}_watchdog_period", n)) {
+        if let Some(p) = Module::get_property::<String>(&format!("{}_watchdog_period", n)) {
             if let Ok(t) = parse_duration::parse(&p) {
                 watchdog_check_periods.insert(n.to_string(), t);
                 prev_check_times.insert(n.to_string(), Utc::now().naive_utc().timestamp());

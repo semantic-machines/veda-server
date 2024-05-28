@@ -27,7 +27,7 @@ const TIMEOUT_SEND: u64 = 60;
 fn main() -> std::io::Result<()> {
     init_module_log!("AUTH");
 
-    let auth_url = Module::get_property("auth_url").expect("param [auth_url] not found in veda.properties");
+    let auth_url = Module::get_property::<String>("auth_url").expect("param [auth_url] not found in veda.properties");
 
     let mut backend = Backend::create(StorageMode::ReadWrite, false);
     info!("connect to AUTHORIZE DB...");

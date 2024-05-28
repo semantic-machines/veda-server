@@ -1,18 +1,21 @@
+use crate::acl_cache::ACLCache;
+use chrono::Utc;
 use std::collections::HashMap;
 use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record, update_counters};
 use v_common::module::info::ModuleInfo;
 use v_common::onto::individual::Individual;
-use v_common::storage::common::{StorageId, VStorage};
+use v_common::storage::lmdb_storage::LmdbInstance;
 use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE};
-use v_common::v_authorization::{Right, RightSet};
-use chrono::{DateTime, Utc};
+use v_common::v_authorization::{ACLRecord, ACLRecordSet};
 
+// Structure for storing access rights data
 struct RightData<'a> {
     resource: &'a [String],
     in_set: &'a [String],
     access: u8,
 }
 
+// Structure for storing auxiliary data
 struct AuxData<'a> {
     use_filter: &'a str,
     marker: char,
@@ -20,14 +23,18 @@ struct AuxData<'a> {
     prefix: &'a str,
 }
 
+// Structure for storing execution context
+
 pub struct Context {
     pub permission_statement_counter: u32,
     pub membership_counter: u32,
-    pub storage: VStorage,
+    pub storage: LmdbInstance,
     pub version_of_index_format: u8,
     pub module_info: ModuleInfo,
+    pub acl_cache: Option<ACLCache>,
 }
 
+// Function to get the access value from an individual object
 fn get_access_from_individual(state: &mut Individual) -> u8 {
     let mut access = 0;
 
@@ -66,11 +73,11 @@ fn get_access_from_individual(state: &mut Individual) -> u8 {
     access
 }
 
-//  - Извлекает информацию о ресурсах, группах и правах доступа из предыдущего и нового состояний объекта.
-//  - Определяет, является ли объект удаленным или восстановленным.
-//  - Вызывает функцию add_or_del_right_sets() для добавления или удаления наборов прав доступа.
-pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual, date: Option<DateTime<Utc>>,
-                        prd_rsc: &str, prd_in_set: &str, prefix: &str, default_access: u8, ctx: &mut Context) {
+// Function for indexing access right sets
+// - Extracts information about resources, groups, and access rights from the previous and new object states.
+// - Determines if the object is deleted, restored, or updated.
+// - Calls the add_or_del_right_sets() function to add or remove access right sets.
+pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual, prd_rsc: &str, prd_in_set: &str, prefix: &str, default_access: u8, ctx: &mut Context) {
     let mut is_drop_count = false;
 
     if let Some(b) = new_state.get_first_bool("v-s:dropCount") {
@@ -137,18 +144,14 @@ pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual,
     };
 
     if n_is_del && !p_is_del {
-        // IS DELETE
-        add_or_del_right_sets(id, &new_data, &prev_data, date, &aux_data, n_is_del, ctx, &mut HashMap::new(), &Cache::None);
+        // Object is deleted
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut HashMap::new(), &CacheType::None);
     } else if !n_is_del && p_is_del {
-        // IS RESTORE
+        // Object is restored
         let mut cache = HashMap::new();
-        //if !pre_resc.is_empty() {
-        //    add_or_sub_right_sets(id, &use_filter, &pre_resc, &pre_in_set, &vec![], &vec![], marker, p_acs, p_acs, true, prefix, ctx, &mut cache, &Cache::Write);
-        //}
-
-        add_or_del_right_sets(id, &new_data, &prev_data, date, &aux_data, false, ctx, &mut cache, &Cache::Read);
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read);
     } else if !n_is_del && !p_is_del {
-        // IS UPDATE
+        // Object is updated
         let mut cache = HashMap::new();
         if !pre_resc.is_empty() {
             let empty_data = RightData {
@@ -157,81 +160,89 @@ pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual,
                 access: p_acs,
             };
 
-            add_or_del_right_sets(id, &prev_data, &empty_data, date, &aux_data, true, ctx, &mut cache, &Cache::None);
+            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache, &CacheType::None);
         }
 
-        add_or_del_right_sets(id, &new_data, &prev_data, date, &aux_data, false, ctx, &mut cache, &Cache::Read);
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read);
     }
 }
 
+// Enumeration for caching mode
 #[derive(PartialEq, Debug)]
-enum Cache {
+enum CacheType {
     Write,
     Read,
     None,
 }
 
+// Function for adding or removing access right sets
 fn add_or_del_right_sets(
     id: &str,
     new_data: &RightData,
     prev_data: &RightData,
-    date: Option<DateTime<Utc>>,
     aux_data: &AuxData,
     is_deleted: bool,
     ctx: &mut Context,
     cache: &mut HashMap<String, String>,
-    mode: &Cache,
+    mode: &CacheType,
 ) {
+    // Get the resources and groups that have been removed
     let removed_resource = get_disappeared(prev_data.resource, new_data.resource);
     let removed_in_set = get_disappeared(prev_data.in_set, new_data.in_set);
 
     if is_deleted && new_data.resource.is_empty() && new_data.in_set.is_empty() {
+        // If the object is deleted and there are no new resources or groups,
+        // use the previous data for updating the access right set
         let t_data = RightData {
             resource: prev_data.resource,
             in_set: prev_data.in_set,
             access: new_data.access,
         };
 
-        update_right_set(id, &t_data, date, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
     } else {
-        update_right_set(id, new_data, date, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
+        // Update the access right set with the new data
+        update_right_set(id, new_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
     }
 
     if !removed_resource.is_empty() {
+        // If there are removed resources, update the access right set for those resources
         let t_data = RightData {
             resource: &removed_resource,
             in_set: new_data.in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, date, true, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode);
     }
 
     if !removed_in_set.is_empty() {
+        // If there are removed groups, update the access right set for those groups
         let t_data = RightData {
             resource: new_data.resource,
             in_set: &removed_in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, date, true, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode);
     }
 }
 
-// - Для каждого ресурса формирует ключ на основе префикса, фильтра и идентификатора ресурса.
-// - Получает предыдущий набор прав доступа из кэша или хранилища.
-// - Обновляет набор прав доступа на основе новых данных и флага удаления.
-// - Сохраняет обновленный набор прав доступа в кэше или хранилище.
+// Function for updating an access right set
+// - For each resource, it generates a key based on the prefix, filter, and resource identifier.
+// - Retrieves the previous access right set from the cache or storage.
+// - Updates the access right set based on the new data and deletion flag.
+// - Saves the updated access right set to the cache or storage.
 fn update_right_set(
     source_id: &str,
     new_data: &RightData,
-    date: Option<DateTime<Utc>>,
     is_deleted: bool,
     prev_access: u8,
     aux_data: &AuxData,
     ctx: &mut Context,
     cache: &mut HashMap<String, String>,
-    mode: &Cache,
+    mode: &CacheType,
 ) {
     for rs in new_data.resource.iter() {
+        // Generate the key based on the prefix, filter, and resource identifier
         let key = aux_data.prefix.to_owned() + aux_data.use_filter + rs;
 
         debug!("APPLY ACCESS = {}", new_data.access);
@@ -239,16 +250,18 @@ fn update_right_set(
             debug!("IS DELETED");
         }
 
-        let mut new_right_set = RightSet::new();
+        let mut new_right_set = ACLRecordSet::new();
 
+        // Retrieve the previous access right set from the cache or storage
         if let Some(prev_data_str) = cache.get(&key) {
             debug!("PRE(MEM): {} {} {:?}", source_id, rs, prev_data_str);
             decode_rec_to_rightset(prev_data_str, &mut new_right_set);
-        } else if let Some(prev_data_str) = ctx.storage.get_value(StorageId::Az, &key) {
+        } else if let Some(prev_data_str) = ctx.storage.get::<String>(&key) {
             debug!("PRE(STORAGE): {} {} {:?}", source_id, rs, prev_data_str);
             decode_rec_to_rightset(&prev_data_str, &mut new_right_set);
         }
 
+        // Update the access right set based on the new data and deletion flag
         for in_set_id in new_data.in_set.iter() {
             if let Some(rr) = new_right_set.get_mut(in_set_id) {
                 rr.is_deleted = is_deleted;
@@ -269,7 +282,7 @@ fn update_right_set(
             } else {
                 new_right_set.insert(
                     in_set_id.to_string(),
-                    Right {
+                    ACLRecord {
                         id: in_set_id.to_string(),
                         access: new_data.access,
                         marker: aux_data.marker,
@@ -281,24 +294,28 @@ fn update_right_set(
             }
         }
 
-        let mut new_record = encode_record(date, new_right_set, ctx.version_of_index_format);
+        let new_record = encode_record(None, &new_right_set, ctx.version_of_index_format);
 
-        if new_record.is_empty() {
-            new_record = "X".to_string();
-        }
-
-        if *mode == Cache::Write {
+        // Save the updated access right set to the cache or storage
+        if *mode == CacheType::Write {
             debug!("NEW(MEM): {} {} {:?}", source_id, rs, new_record);
             cache.insert(key, new_record);
         } else {
             debug!("NEW(STORAGE): {} {} {:?}", source_id, rs, new_record);
-            ctx.storage.put_kv(StorageId::Az, &key, &new_record);
+            ctx.storage.put(&key, new_record);
+
+            if let Some(c) = &mut ctx.acl_cache {
+                let new_record = encode_record(Some(Utc::now()), &new_right_set, ctx.version_of_index_format);
+                debug!("NEW(CACHE): {} {} {:?}", source_id, rs, new_record);
+                c.instance.put(&key, new_record);
+            }
         }
     }
 }
 
+// Function to get the elements that are in array a but not in array b
 pub fn get_disappeared(a: &[String], b: &[String]) -> Vec<String> {
-    let delta = Vec::new();
+    let delta = Vec::new(); // TODO: Fix it
 
     for r_a in a.iter() {
         let mut delta = Vec::new();
@@ -315,5 +332,8 @@ pub fn get_disappeared(a: &[String], b: &[String]) -> Vec<String> {
         }
     }
 
+    if !delta.is_empty() {
+        warn!("### disappeared A B, {:?}", delta);
+    }
     delta
 }

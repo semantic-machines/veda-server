@@ -1,13 +1,11 @@
-/*
- Реализацию индексатора прав доступа.
- Процесс индексации прав доступа включает в себя чтение элементов из очереди,
- извлечение информации о правах доступа из объектов,
- обновление наборов прав доступа и сохранение обновленных данных в хранилище
-*/
+use ini::Ini;
+use std::fs::File;
+use std::io::Read;
 
 #[macro_use]
 extern crate log;
 
+use crate::acl_cache::{clean_cache, ACLCache};
 use crate::common::*;
 use std::{env, thread};
 use v_common::init_module_log;
@@ -15,15 +13,23 @@ use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_cmd, get_inner_binobj_as_individual, init_log, Module, PrepareError};
 use v_common::module::veda_backend::Backend;
 use v_common::onto::individual::Individual;
-use v_common::storage::common::{StorageId, StorageMode, VStorage};
+use v_common::storage::common::StorageMode;
+use v_common::storage::lmdb_storage::LmdbInstance;
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_authorization::common::{Access, FILTER_PREFIX, MEMBERSHIP_PREFIX, PERMISSION_PREFIX};
 use v_common::v_queue::consumer::Consumer;
 
+mod acl_cache;
 mod common;
 
 fn main() -> Result<(), i32> {
     init_module_log!("AZ_INDEXER");
+
+    // Чтение файла конфигурации
+    let mut config_file = File::open("veda.properties").expect("Failed to open config file");
+    let mut config_str = String::new();
+    config_file.read_to_string(&mut config_str).expect("Failed to read config file");
+    let config = Ini::load_from_str(&config_str).expect("Failed to parse config file");
 
     let mut module = Module::default();
     let mut backend = Backend::create(StorageMode::ReadOnly, false);
@@ -41,12 +47,13 @@ fn main() -> Result<(), i32> {
     let mut ctx = Context {
         permission_statement_counter: 0,
         membership_counter: 0,
-        storage: VStorage::new_lmdb("./data", StorageMode::ReadWrite, None),
+        storage: LmdbInstance::new("./data/acl-indexes", StorageMode::ReadWrite),
         version_of_index_format: 2,
         module_info: module_info.unwrap(),
+        acl_cache: ACLCache::new(&config),
     };
 
-    if ctx.storage.get_value(StorageId::Az, "Pcfg:VedaSystem").is_none() {
+    if ctx.storage.get::<String>("Pcfg:VedaSystem").is_none() {
         info!("create permission for system account");
         let mut sys_permission = Individual::default();
         sys_permission.set_id("cfg:VedaSystemPermission");
@@ -80,8 +87,8 @@ fn main() -> Result<(), i32> {
     Ok(())
 }
 
-fn heartbeat(_module: &mut Backend, _ctx: &mut Context) -> Result<(), PrepareError> {
-    Ok(())
+fn heartbeat(_module: &mut Backend, ctx: &mut Context) -> Result<(), PrepareError> {
+    clean_cache(ctx)
 }
 
 fn before_batch(_module: &mut Backend, _ctx: &mut Context, _size_batch: u32) -> Option<u32> {
@@ -133,14 +140,13 @@ fn prepare(_module: &mut Backend, ctx: &mut Context, queue_element: &mut Individ
 }
 
 fn prepare_permission_statement(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
-    index_right_sets(prev_state, new_state, None, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx);
+    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx);
 }
 
 fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
     index_right_sets(
         prev_state,
         new_state,
-        None,
         "v-s:resource",
         "v-s:memberOf",
         MEMBERSHIP_PREFIX,
@@ -150,20 +156,20 @@ fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, c
 }
 
 fn prepare_permission_filter(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
-    index_right_sets(prev_state, new_state, None, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx);
+    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx);
 }
 
 fn prepare_account(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
     if new_state.is_empty() && !prev_state.is_empty() {
         if let Some(login) = prev_state.get_first_literal("v-s:login") {
             let key = format!("_L:{}", login.to_lowercase());
-            ctx.storage.remove(StorageId::Az, &key);
+            ctx.storage.remove(&key);
             info!("index account, remove: {} {}", prev_state.get_id(), login);
         }
     } else if let Some(login) = new_state.get_first_literal("v-s:login") {
         let key = format!("_L:{}", login.to_lowercase());
         let val = new_state.get_id();
-        ctx.storage.put_kv(StorageId::Az, &key, val);
+        ctx.storage.put(&key, val);
         info!("index account, update: {} {}", new_state.get_id(), login);
     }
 }

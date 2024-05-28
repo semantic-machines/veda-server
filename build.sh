@@ -98,3 +98,7 @@ fi
 if [ $1 == "tools" ] || [ $1 == "veda-tools" ] || [ $1 == "all" ]; then
     build_server_module "veda-tools"
 fi
+
+if [ -z $1 ] || [ $1 == "stat-collector" ] || [ $1 == "veda-stat-collector" ] || [ $1 == "basic" ] || [ $1 == "all" ]; then
+    build_server_module "veda-stat-collector"
+fi

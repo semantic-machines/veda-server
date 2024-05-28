@@ -90,7 +90,7 @@ fn main() {
         .filter(None, LevelFilter::Info)
         .init();
 
-    let ccus_port = Module::get_property("ccus_port").expect("param [ccus_port] not found in veda.properties");
+    let ccus_port = Module::get_property::<String>("ccus_port").expect("param [ccus_port] not found in veda.properties");
 
     // start shared data manager
 

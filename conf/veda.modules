@@ -36,4 +36,8 @@ web-api
     module = web-api
     args = --http_port=8080 --use-direct-ft-query=true --workers=1 --db-connection=db-conn-1
 
+stat-collector
+    module = stat-collector
+    args = tcp://127.0.0.1:40899 100
+
 input-onto

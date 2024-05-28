@@ -308,7 +308,7 @@ pub(crate) fn read_duration_param(indv: &mut Individual, param: &str) -> Option<
 pub(crate) fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
     let mut res = AuthConf::default();
 
-    res.check_ticket_ip = Module::get_property("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
+    res.check_ticket_ip = Module::get_property::<String>("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
 
     if let Some(mut node) = backend.get_individual_s("cfg:standart_node") {
         if let Some(d) = read_duration_param(&mut node, "cfg:user_password_lifetime") {

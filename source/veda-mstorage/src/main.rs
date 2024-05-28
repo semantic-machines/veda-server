@@ -59,7 +59,7 @@ fn main() -> std::io::Result<()> {
     let queue_out = Queue::new(&(base_path.to_owned() + "/queue"), "individuals-flow", Mode::ReadWrite).expect("!!!!!!!!! FAIL QUEUE");
 
     // get the notify_channel_url property for the module
-    let notify_channel_url = Module::get_property("notify_channel_url").expect("failed to read property [notify_channel_url]");
+    let notify_channel_url = Module::get_property::<String>("notify_channel_url").expect("failed to read property [notify_channel_url]");
 
     // create a new socket to publish messages to the notify channel
     let notify_soc = Socket::new(Protocol::Pub0).unwrap();
@@ -91,7 +91,7 @@ fn main() -> std::io::Result<()> {
 
     // get the main_module_url property for the module
     let param_name = "main_module_url";
-    let main_module_url = Module::get_property(param_name);
+    let main_module_url = Module::get_property::<String>(param_name);
 
     // if main_module_url not found, log error and return
     if main_module_url.is_none() {
@@ -100,7 +100,7 @@ fn main() -> std::io::Result<()> {
     }
 
     // parse the check_ticket_ip property to a boolean, defaults to true
-    let check_ticket_ip = Module::get_property("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
+    let check_ticket_ip = Module::get_property::<String>("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
 
     // unwrap the main_module_url property
     let main_module_url = main_module_url.unwrap();

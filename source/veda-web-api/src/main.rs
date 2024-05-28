@@ -90,7 +90,7 @@ async fn main() -> std::io::Result<()> {
     info!("{} {} {}", module_name, version!(), git_version!());
 
     let mut tt_config = None;
-    if let Some(p) = Module::get_property("db_connection") {
+    if let Some(p) = Module::get_property::<String>("db_connection") {
         if p.contains("tcp://") {
             match Url::parse(&p) {
                 Ok(url) => {
@@ -176,7 +176,7 @@ async fn main() -> std::io::Result<()> {
         if !use_direct_ft_query {
             info!("use ft-query-service");
 
-            if let Ok(url) = Module::get_property("ft_query_service_url").unwrap_or_default().parse::<Url>() {
+            if let Ok(url) = Module::get_property::<String>("ft_query_service_url").unwrap_or_default().parse::<Url>() {
                 if url.scheme() == "tcp" {
                     ft_client.nng_client = Some(FTClient::new(url.to_string()));
                     ft_client.query_type = VQLClientConnectType::Nng;
@@ -187,7 +187,7 @@ async fn main() -> std::io::Result<()> {
             }
         }
 
-        let check_ticket_ip = Module::get_property("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
+        let check_ticket_ip = Module::get_property::<String>("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
         info!("PARAM [check_ticket_ip] = {check_ticket_ip}");
         let (ticket_cache_read, ticket_cache_write) = evmap::new();
         let (f2s_prefixes_cache_read, f2s_prefixes_cache_write) = evmap::new();
