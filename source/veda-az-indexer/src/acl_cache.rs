@@ -16,33 +16,33 @@ pub struct ACLCache {
     last_daily_cleanup_time: Option<DateTime<Utc>>,
     keys: Vec<Vec<u8>>,
     keys_processed: usize,
-    expiration: StdDuration,
-    cleanup_interval: StdDuration,
-    daily_cleanup_interval: StdDuration,
-    batch_time_limit: StdDuration,
+    pub(crate) expiration: StdDuration,
+    pub(crate) cleanup_interval: StdDuration,
+    pub(crate) daily_cleanup_interval: StdDuration,
+    pub(crate) batch_time_limit: StdDuration,
 }
 
 impl ACLCache {
     pub(crate) fn new(config: &Ini) -> Option<Self> {
-        let write_az_cache = config.get_from(Some("az_cache"), "write").unwrap_or("false").parse::<bool>().unwrap_or_default();
+        let write_az_cache = config.get_from(Some("authorization_cache"), "write").unwrap_or("false").parse::<bool>().unwrap_or_default();
         if !write_az_cache {
             return None;
         }
 
-        let expiration_str = config.get_from(Some("az_cache"), "expiration").unwrap_or("30d").to_string();
-        let cleanup_interval_str = config.get_from(Some("az_cache"), "cleanup_interval").unwrap_or("12h").to_string();
-        let daily_cleanup_interval_str = config.get_from(Some("az_cache"), "daily_cleanup_interval").unwrap_or("24h").to_string();
-        let batch_time_limit_str = config.get_from(Some("az_cache"), "batch_time_limit").unwrap_or("100ms").to_string();
+        let expiration_str = config.get_from(Some("authorization_cache"), "expiration").unwrap_or("30d").to_string();
+        let cleanup_interval_str = config.get_from(Some("authorization_cache"), "cleanup_interval").unwrap_or("12h").to_string();
+        let daily_cleanup_interval_str = config.get_from(Some("authorization_cache"), "daily_cleanup_interval").unwrap_or("24h").to_string();
+        let batch_time_limit_str = config.get_from(Some("authorization_cache"), "batch_time_limit").unwrap_or("100ms").to_string();
 
         let expiration = parse(&expiration_str).unwrap_or(StdDuration::from_secs(30 * 24 * 60 * 60));
         let cleanup_interval = parse(&cleanup_interval_str).unwrap_or(StdDuration::from_secs(12 * 60 * 60));
         let daily_cleanup_interval = parse(&daily_cleanup_interval_str).unwrap_or(StdDuration::from_secs(24 * 60 * 60));
         let batch_time_limit = parse(&batch_time_limit_str).unwrap_or(StdDuration::from_millis(100));
 
-        info!("Expiration: {}", format_duration(expiration));
-        info!("Cleanup interval: {}", format_duration(cleanup_interval));
-        info!("Daily cleanup interval: {}", format_duration(daily_cleanup_interval));
-        info!("Batch time limit: {}", format_duration(batch_time_limit));
+        info!("Cache, expiration: {}", format_duration(expiration));
+        info!("Cache, cleanup interval: {}", format_duration(cleanup_interval));
+        info!("Cache, daily cleanup interval: {}", format_duration(daily_cleanup_interval));
+        info!("Cache, batch time limit: {}", format_duration(batch_time_limit));
 
         Some(ACLCache {
             instance: LmdbInstance::new("./data/acl-cache-indexes", StorageMode::ReadWrite),

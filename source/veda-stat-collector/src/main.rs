@@ -2,6 +2,7 @@ use chrono::prelude::*;
 use chrono::Duration;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use humantime::format_duration;
 use log::{debug, error, info};
 use nng::{
     options::{protocol::pubsub::Subscribe, Options},
@@ -16,6 +17,7 @@ use std::{
     io::Write,
     sync::{Arc, Condvar, Mutex},
     thread,
+    time::Duration as StdDuration,
 };
 use std::io::BufRead;
 
@@ -27,16 +29,36 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
     let file = fs::File::open(file_name)?;
     let reader = std::io::BufReader::new(file);
 
+    let mut cache_count = 0;
+    let mut db_count = 0;
+    let mut cache_miss_count = 0;
+    let mut total_auth_count = 0;
+    let mut total_auth_time = 0;
+
     for line in reader.lines() {
         let line = line?;
-        let parts: Vec<&str> = line.splitn(2, ',').collect();
-        if parts.len() < 2 {
+        let parts: Vec<&str> = line.splitn(3, ',').collect();
+        if parts.len() < 3 {
             debug!("Skipping line: {}", line);
             continue;
         }
 
         let timestamp_sender = parts[0];
-        let identifiers = parts[1];
+        let auth_time_str = parts[1];
+        let identifiers = parts[2];
+
+        let auth_time: u64 = match auth_time_str.parse() {
+            Ok(time) => time,
+            Err(e) => {
+                error!("Error parsing authentication time: {}", auth_time_str);
+                error!("Error message: {}", e);
+                debug!("Full line: {}", line);
+                continue;
+            }
+        };
+
+        total_auth_count += 1;
+        total_auth_time += auth_time;
 
         let timestamp = match timestamp_sender.split_once('|') {
             Some((timestamp, _sender)) => timestamp,
@@ -68,9 +90,38 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
 
         let counter = result.entry(key).or_insert_with(std::collections::BTreeMap::new);
         for identifier in identifiers.split(';') {
-            *counter.entry(identifier.to_string()).or_insert(0) += 1;
+            let (identifier, source) = match identifier.split_once('/') {
+                Some((identifier, source)) => (identifier.to_string(), source),
+                None => {
+                    debug!("Skipping identifier: {}", identifier);
+                    continue;
+                }
+            };
+
+            match source {
+                "C" => cache_count += 1,
+                "B" => db_count += 1,
+                "cB" => {
+                    cache_miss_count += 1;
+                    db_count += 1;
+                }
+                _ => {
+                    debug!("Unknown source: {}", source);
+                    continue;
+                }
+            }
+
+            *counter.entry(identifier).or_insert(0) += 1;
         }
     }
+
+    let log_file_name = format!("{}.log", file_name);
+    let mut log_file = fs::File::create(&log_file_name)?;
+    writeln!(log_file, "Cache requests: {}", cache_count)?;
+    writeln!(log_file, "Database requests: {}", db_count)?;
+    writeln!(log_file, "Cache misses: {}", cache_miss_count)?;
+    writeln!(log_file, "Total authentications: {}", total_auth_count)?;
+    writeln!(log_file, "Total authentication time: {}", format_duration(StdDuration::from_micros(total_auth_time)))?;
 
     let processed_file_name = format!("{}.processed", file_name);
     let mut processed_file = fs::File::create(&processed_file_name)?;
@@ -89,6 +140,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
 
     Ok(())
 }
+
 fn archive_file(file_name: &str, quantum: &str) {
     let gz_file_name = format!("{}.gz", file_name);
     match fs::File::create(&gz_file_name) {

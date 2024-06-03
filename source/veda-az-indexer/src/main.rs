@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod main_test;
+
 use ini::Ini;
 use std::fs::File;
 use std::io::Read;
@@ -16,7 +19,7 @@ use v_common::onto::individual::Individual;
 use v_common::storage::common::StorageMode;
 use v_common::storage::lmdb_storage::LmdbInstance;
 use v_common::v_api::api_client::IndvOp;
-use v_common::v_authorization::common::{Access, FILTER_PREFIX, MEMBERSHIP_PREFIX, PERMISSION_PREFIX};
+use v_common::v_authorization::common::{Access, FILTER_PREFIX, MEMBERSHIP_PREFIX};
 use v_common::v_queue::consumer::Consumer;
 
 mod acl_cache;
@@ -137,10 +140,6 @@ fn prepare(_module: &mut Backend, ctx: &mut Context, queue_element: &mut Individ
     }
 
     Ok(true)
-}
-
-fn prepare_permission_statement(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
-    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx);
 }
 
 fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {

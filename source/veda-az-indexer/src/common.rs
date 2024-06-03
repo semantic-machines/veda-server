@@ -5,7 +5,7 @@ use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record, update_c
 use v_common::module::info::ModuleInfo;
 use v_common::onto::individual::Individual;
 use v_common::storage::lmdb_storage::LmdbInstance;
-use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE};
+use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE, PERMISSION_PREFIX};
 use v_common::v_authorization::{ACLRecord, ACLRecordSet};
 
 // Structure for storing access rights data
@@ -336,4 +336,8 @@ pub fn get_disappeared(a: &[String], b: &[String]) -> Vec<String> {
         warn!("### disappeared A B, {:?}", delta);
     }
     delta
+}
+
+pub fn prepare_permission_statement(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
+    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx);
 }
