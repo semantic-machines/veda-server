@@ -10,6 +10,7 @@ use nng::{
 };
 use std::env;
 use std::fs;
+use std::io::BufRead;
 use std::process;
 use std::{
     collections::VecDeque,
@@ -19,7 +20,6 @@ use std::{
     thread,
     time::Duration as StdDuration,
 };
-use std::io::BufRead;
 
 const DATA_DIR: &str = "./data/stat";
 
@@ -54,7 +54,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
                 error!("Error message: {}", e);
                 debug!("Full line: {}", line);
                 continue;
-            }
+            },
         };
 
         total_auth_count += 1;
@@ -65,7 +65,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
             None => {
                 debug!("Skipping line: {}", line);
                 continue;
-            }
+            },
         };
 
         let timestamp = match NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S%.3fZ") {
@@ -75,7 +75,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
                 error!("Error message: {}", e);
                 debug!("Full line: {}", line);
                 continue;
-            }
+            },
         };
 
         let key = match quantum {
@@ -85,7 +85,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
             _ => {
                 error!("Invalid quantum: {}", quantum);
                 process::exit(1);
-            }
+            },
         };
 
         let counter = result.entry(key).or_insert_with(std::collections::BTreeMap::new);
@@ -95,7 +95,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
                 None => {
                     debug!("Skipping identifier: {}", identifier);
                     continue;
-                }
+                },
             };
 
             match source {
@@ -104,11 +104,11 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
                 "cB" => {
                     cache_miss_count += 1;
                     db_count += 1;
-                }
+                },
                 _ => {
                     debug!("Unknown source: {}", source);
                     continue;
-                }
+                },
             }
 
             *counter.entry(identifier).or_insert(0) += 1;
@@ -130,10 +130,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
         let mut sorted_identifiers: Vec<(String, i32)> = identifiers.into_iter().collect();
         sorted_identifiers.sort_by(|a, b| b.1.cmp(&a.1));
 
-        let identifier_counts: Vec<String> = sorted_identifiers
-            .into_iter()
-            .map(|(identifier, count)| format!("{},{}", identifier, count))
-            .collect();
+        let identifier_counts: Vec<String> = sorted_identifiers.into_iter().map(|(identifier, count)| format!("{},{}", identifier, count)).collect();
 
         writeln!(processed_file, "{};{}", timestamp, identifier_counts.join(";"))?;
     }

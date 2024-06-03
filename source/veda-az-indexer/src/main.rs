@@ -8,7 +8,7 @@ use std::io::Read;
 #[macro_use]
 extern crate log;
 
-use crate::acl_cache::{clean_cache, ACLCache};
+use crate::acl_cache::{clean_cache, process_stat_files, ACLCache};
 use crate::common::*;
 use std::{env, thread};
 use v_common::init_module_log;
@@ -91,6 +91,11 @@ fn main() -> Result<(), i32> {
 }
 
 fn heartbeat(_module: &mut Backend, ctx: &mut Context) -> Result<(), PrepareError> {
+    if let Ok(res) = process_stat_files(ctx) {
+        if res {
+            return Ok(());
+        }
+    }
     clean_cache(ctx)
 }
 
