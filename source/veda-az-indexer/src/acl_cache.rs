@@ -87,6 +87,8 @@ pub fn clean_cache(ctx: &mut Context) -> Result<(), PrepareError> {
         }
 
         cache_ctx.last_cleanup_time = Some(now);
+        let total_count = cache_ctx.instance.count();
+        info!("Records in cache: {}", total_count);
         info!("Updated last cleanup time: {}", now);
 
         let expiration_duration = ChronoDuration::from_std(cache_ctx.expiration).unwrap();
@@ -240,7 +242,7 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                 }
 
                 // Парсинг временной метки
-                let timestamp = match parts[0].parse::<DateTime<Utc>>() {
+                match parts[0].parse::<DateTime<Utc>>() {
                     Ok(timestamp) => timestamp,
                     Err(_) => {
                         error!("CACHE: fail parse date: {:?}", parts[0]);
@@ -268,7 +270,7 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
 
                     let identifier = identifier_parts[0];
 
-                    info!("CACHE: id={}, count={}", identifier, count);
+                    //info!("CACHE: id={}, count={}", identifier, count);
 
                     // Проверка, что количество запросов превышает пороговое значение
                     if count < cache_ctx.min_identifier_count_threshold {
@@ -285,11 +287,11 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                         Some(value) => {
                             let mut record_set = ACLRecordSet::new();
                             let (_, _) = decode_rec_to_rightset(&value, &mut record_set);
-                            let new_value = encode_record(Some(timestamp), &record_set, ctx.version_of_index_format);
+                            let new_value = encode_record(Some(Utc::now()), &record_set, ctx.version_of_index_format);
                             if !cache_ctx.instance.put(identifier, new_value.clone()) {
                                 error!("CACHE: fail store to cache db: {}, {}", identifier_str, new_value);
                             } else {
-                                info!("CACHE: add: {}", identifier);
+                                info!("CACHE: add: id={}, count={}", identifier, count);
                             }
                         },
                         None => continue,
