@@ -179,7 +179,7 @@ fn archive_existing_files(quantum: &str) {
             if let Ok(entry) = entry {
                 let path = entry.path();
                 if let Some(extension) = path.extension() {
-                    if extension != "txt" {
+                    if extension != "dst" {
                         continue;
                     }
                     if let Some(file_name) = path.to_str() {
@@ -257,7 +257,7 @@ fn main() -> Result<(), nng::Error> {
                     }
                     let now: DateTime<Utc> = Utc::now();
                     let timestamp = now.format("%Y-%m-%d_%H-%M-%S%.3f");
-                    file_name = format!("./data/stat/az_stat-{}.txt", timestamp);
+                    file_name = format!("./data/stat/az_stat-{}.dst", timestamp);
                     match OpenOptions::new().append(true).create(true).open(&file_name) {
                         Ok(f) => file = Some(f),
                         Err(e) => {

@@ -38,25 +38,17 @@ impl ACLCache {
         let cleanup_interval_str = config.get_from(Some("authorization_cache"), "cleanup_interval").unwrap_or("12h").to_string();
         let daily_cleanup_interval_str = config.get_from(Some("authorization_cache"), "daily_cleanup_interval").unwrap_or("24h").to_string();
         let batch_time_limit_str = config.get_from(Some("authorization_cache"), "batch_time_limit").unwrap_or("100ms").to_string();
+        let stat_processing_time_limit_str = config.get_from(Some("authorization_cache"), "stat_processing_time_limit").unwrap_or("5s").to_string();
+        let stat_processing_interval_str = config.get_from(Some("authorization_cache"), "stat_processing_interval").unwrap_or("10m").to_string();
 
         let expiration = parse(&expiration_str).unwrap_or(StdDuration::from_secs(30 * 24 * 60 * 60));
         let cleanup_interval = parse(&cleanup_interval_str).unwrap_or(StdDuration::from_secs(12 * 60 * 60));
         let daily_cleanup_interval = parse(&daily_cleanup_interval_str).unwrap_or(StdDuration::from_secs(24 * 60 * 60));
         let batch_time_limit = parse(&batch_time_limit_str).unwrap_or(StdDuration::from_millis(100));
+        let stat_processing_time_limit = parse(&stat_processing_time_limit_str).unwrap_or(StdDuration::from_secs(5));
+        let stat_processing_interval = parse(&stat_processing_interval_str).unwrap_or(StdDuration::from_secs(10 * 60));
 
         let min_identifier_count_threshold = config.get_from(Some("authorization_cache"), "min_identifier_count_threshold").unwrap_or("100").parse().unwrap_or(100);
-        let stat_processing_time_limit = config
-            .get_from(Some("authorization_cache"), "stat_processing_time_limit")
-            .unwrap_or("5000")
-            .parse()
-            .map(StdDuration::from_millis)
-            .unwrap_or(StdDuration::from_secs(5));
-        let stat_processing_interval = config
-            .get_from(Some("authorization_cache"), "stat_processing_interval")
-            .unwrap_or("600000")
-            .parse()
-            .map(StdDuration::from_millis)
-            .unwrap_or(StdDuration::from_secs(600));
 
         info!("Cache, expiration: {}", format_duration(expiration));
         info!("Cache, cleanup interval: {}", format_duration(cleanup_interval));
@@ -174,8 +166,8 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
         cache_ctx.last_stat_processing_time = Some(now);
 
         let stat_dir = "./data/stat";
-        let processed_extension = ".processed";
-        let state_file = "./data/stat/process_state.txt";
+        let processed_extension = "processed";
+        let state_file = "./data/stat/process_state.info";
 
         let start_time = Instant::now();
 
@@ -204,10 +196,10 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
             let entry = entry?;
             let path = entry.path();
 
-            // Проверка, что файл имеет расширение "txt"
-            if !path.is_file() || path.extension().map_or(true, |ext| ext != "txt") {
-                continue;
-            }
+            // Проверка, что файл имеет расширение "dst"
+            //if !path.is_file() || path.extension().map_or(true, |ext| ext != "dst") {
+            //    continue;
+            //}
 
             // Проверка наличия файла с расширением processed_extension
             let processed_path = path.with_extension(processed_extension);
@@ -251,13 +243,14 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                 let timestamp = match parts[0].parse::<DateTime<Utc>>() {
                     Ok(timestamp) => timestamp,
                     Err(_) => {
-                        error!("ACL_CACHE: fail parse date: {:?}", parts[0]);
+                        error!("CACHE: fail parse date: {:?}", parts[0]);
                         continue;
                     },
                 };
 
-                let identifiers: Vec<&str> = parts[1].split(',').collect();
+                let identifiers = &parts[1..];
                 // Обработка идентификаторов
+
                 for identifier_str in identifiers {
                     let identifier_parts: Vec<&str> = identifier_str.split(',').collect();
                     if identifier_parts.len() != 2 {
@@ -268,17 +261,19 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                     let count = match identifier_parts[1].parse::<usize>() {
                         Ok(count) => count,
                         Err(_) => {
-                            error!("ACL_CACHE: fail parse count: {}", identifier_str);
+                            error!("CACHE: fail parse count: {}", identifier_str);
                             continue;
                         },
                     };
+
+                    let identifier = identifier_parts[0];
+
+                    info!("CACHE: id={}, count={}", identifier, count);
 
                     // Проверка, что количество запросов превышает пороговое значение
                     if count < cache_ctx.min_identifier_count_threshold {
                         continue;
                     }
-
-                    let identifier = identifier_parts[0];
 
                     // Проверка наличия идентификатора в кеше
                     if cache_ctx.instance.get::<String>(identifier).is_some() {
@@ -292,7 +287,9 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                             let (_, _) = decode_rec_to_rightset(&value, &mut record_set);
                             let new_value = encode_record(Some(timestamp), &record_set, ctx.version_of_index_format);
                             if !cache_ctx.instance.put(identifier, new_value.clone()) {
-                                error!("ACL_CACHE: fail store to cache db: {}, {}", identifier_str, new_value);
+                                error!("CACHE: fail store to cache db: {}, {}", identifier_str, new_value);
+                            } else {
+                                info!("CACHE: add: {}", identifier);
                             }
                         },
                         None => continue,
@@ -307,8 +304,8 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                 break;
             }
 
-            // Переименование обработанного файла
-            std::fs::rename(&processed_path, processed_path.with_extension("processed"))?;
+            // Обработка завершена, переименование обработанного файла
+            std::fs::rename(&processed_path, processed_path.with_extension("ok"))?;
             info!("Processed file: {:?}", processed_path);
             processed_file = None;
             line_number = 0;
@@ -316,14 +313,14 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
 
         // Сохранение состояния обработки в файл
         if processed_file_found {
-            let mut state_file = File::create(state_file)?;
             if let Some(file) = processed_file {
+                let mut state_file = File::create(state_file)?;
                 writeln!(state_file, "{}", file)?;
+                writeln!(state_file, "{}", line_number)?;
+            } else {
+                // Удаление файла состояния, если обработка завершена
+                std::fs::remove_file(state_file)?;
             }
-            writeln!(state_file, "{}", line_number)?;
-        } else {
-            // Удаление файла состояния, если обработка завершена
-            std::fs::remove_file(state_file)?;
         }
 
         Ok(processed_file_found)
