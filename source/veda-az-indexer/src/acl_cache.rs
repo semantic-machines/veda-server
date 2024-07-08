@@ -1,4 +1,5 @@
 use crate::common::Context;
+use chrono::NaiveTime;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use humantime::format_duration;
 use ini::Ini;
@@ -13,18 +14,19 @@ use v_common::v_authorization::ACLRecordSet;
 
 pub struct ACLCache {
     pub(crate) instance: LmdbInstance,
-    last_cleanup_time: Option<DateTime<Utc>>,
-    last_daily_cleanup_time: Option<DateTime<Utc>>,
     keys: Vec<Vec<u8>>,
     keys_processed: usize,
     pub(crate) expiration: StdDuration,
-    pub(crate) cleanup_interval: StdDuration,
-    pub(crate) daily_cleanup_interval: StdDuration,
-    pub(crate) batch_time_limit: StdDuration,
+    pub(crate) cleanup_time: NaiveTime,
+    pub(crate) cleanup_in_progress: bool,
+    pub(crate) cleanup_continue_interval: StdDuration,
+    pub(crate) cleanup_batch_time_limit: StdDuration,
     pub(crate) min_identifier_count_threshold: usize,
     pub(crate) stat_processing_time_limit: StdDuration,
     pub(crate) stat_processing_interval: StdDuration,
     pub(crate) last_stat_processing_time: Option<DateTime<Utc>>,
+    pub(crate) last_cleanup_batch_time: Option<DateTime<Utc>>,
+    pub(crate) last_cleanup_date: Option<DateTime<Utc>>,
 }
 
 impl ACLCache {
@@ -35,43 +37,45 @@ impl ACLCache {
         }
 
         let expiration_str = config.get_from(Some("authorization_cache"), "expiration").unwrap_or("30d").to_string();
-        let cleanup_interval_str = config.get_from(Some("authorization_cache"), "cleanup_interval").unwrap_or("12h").to_string();
-        let daily_cleanup_interval_str = config.get_from(Some("authorization_cache"), "daily_cleanup_interval").unwrap_or("24h").to_string();
-        let batch_time_limit_str = config.get_from(Some("authorization_cache"), "batch_time_limit").unwrap_or("100ms").to_string();
+        let cleanup_time_str = config.get_from(Some("authorization_cache"), "cleanup_time").unwrap_or("02:00:00");
+        let cleanup_batch_time_limit_str = config.get_from(Some("authorization_cache"), "cleanup_batch_time_limit").unwrap_or("100ms").to_string();
+        let cleanup_continue_interval_str = config.get_from(Some("authorization_cache"), "cleanup_continue_interval").unwrap_or("10s").to_string();
+
         let stat_processing_time_limit_str = config.get_from(Some("authorization_cache"), "stat_processing_time_limit").unwrap_or("5s").to_string();
         let stat_processing_interval_str = config.get_from(Some("authorization_cache"), "stat_processing_interval").unwrap_or("10m").to_string();
 
         let expiration = parse(&expiration_str).unwrap_or(StdDuration::from_secs(30 * 24 * 60 * 60));
-        let cleanup_interval = parse(&cleanup_interval_str).unwrap_or(StdDuration::from_secs(12 * 60 * 60));
-        let daily_cleanup_interval = parse(&daily_cleanup_interval_str).unwrap_or(StdDuration::from_secs(24 * 60 * 60));
-        let batch_time_limit = parse(&batch_time_limit_str).unwrap_or(StdDuration::from_millis(100));
-        let stat_processing_time_limit = parse(&stat_processing_time_limit_str).unwrap_or(StdDuration::from_secs(5));
+        let cleanup_time = NaiveTime::parse_from_str(cleanup_time_str, "%H:%M:%S").unwrap_or_else(|_| NaiveTime::from_hms_opt(2, 0, 0).unwrap());
+        let cleanup_batch_time_limit = parse(&cleanup_batch_time_limit_str).unwrap_or(StdDuration::from_millis(100));
+        let cleanup_continue_interval = parse(&cleanup_continue_interval_str).unwrap_or(StdDuration::from_secs(50));
         let stat_processing_interval = parse(&stat_processing_interval_str).unwrap_or(StdDuration::from_secs(10 * 60));
+        let stat_processing_time_limit = parse(&stat_processing_time_limit_str).unwrap_or(StdDuration::from_secs(10 * 60));
 
         let min_identifier_count_threshold = config.get_from(Some("authorization_cache"), "min_identifier_count_threshold").unwrap_or("100").parse().unwrap_or(100);
 
         info!("Cache, expiration: {}", format_duration(expiration));
-        info!("Cache, cleanup interval: {}", format_duration(cleanup_interval));
-        info!("Cache, daily cleanup interval: {}", format_duration(daily_cleanup_interval));
-        info!("Cache, batch time limit: {}", format_duration(batch_time_limit));
+        info!("Cache, cleanup time: {}", cleanup_time);
+        info!("Cache, cleanup batch time limit: {}", format_duration(cleanup_batch_time_limit));
+        info!("Cache, cleanup continue interval: {}", format_duration(cleanup_continue_interval));
         info!("Cache, min identifier count threshold: {}", min_identifier_count_threshold);
         info!("Cache, stat processing time limit: {}", format_duration(stat_processing_time_limit));
         info!("Cache, stat processing interval: {}", format_duration(stat_processing_interval));
 
         Some(ACLCache {
             instance: LmdbInstance::new("./data/acl-cache-indexes", StorageMode::ReadWrite),
-            last_cleanup_time: None,
-            last_daily_cleanup_time: None,
             keys: vec![],
             keys_processed: 0,
             expiration,
-            cleanup_interval,
-            daily_cleanup_interval,
-            batch_time_limit,
+            cleanup_time,
+            cleanup_in_progress: false,
+            cleanup_continue_interval,
+            cleanup_batch_time_limit,
             min_identifier_count_threshold,
             stat_processing_time_limit,
             stat_processing_interval,
             last_stat_processing_time: None,
+            last_cleanup_batch_time: None,
+            last_cleanup_date: None,
         })
     }
 }
@@ -79,72 +83,78 @@ impl ACLCache {
 pub fn clean_cache(ctx: &mut Context) -> Result<(), PrepareError> {
     if let Some(cache_ctx) = &mut ctx.acl_cache {
         let now = Utc::now();
+        let current_time = now.time();
 
-        if let Some(last_cleanup_time) = cache_ctx.last_cleanup_time {
-            if now - last_cleanup_time < ChronoDuration::from_std(cache_ctx.cleanup_interval).unwrap() {
-                return Ok(());
-            }
-        }
+        // Check if it's time to start the cleanup
+        if !cache_ctx.cleanup_in_progress {
+            let should_start_cleanup = match cache_ctx.last_cleanup_date {
+                Some(last_cleanup) => {
+                    now.date_naive() > last_cleanup.date_naive() &&
+                        (current_time >= cache_ctx.cleanup_time ||
+                            now.date_naive() > last_cleanup.date_naive().succ_opt().unwrap_or(last_cleanup.date_naive()))
+                },
+                None => true, // If we've never run a cleanup, start it immediately
+            };
 
-        cache_ctx.last_cleanup_time = Some(now);
-        let total_count = cache_ctx.instance.count();
-        info!("Records in cache: {}", total_count);
-        info!("Updated last cleanup time: {}", now);
-
-        let expiration_duration = ChronoDuration::from_std(cache_ctx.expiration).unwrap();
-        info!("Expiration duration: {:?}", cache_ctx.expiration);
-
-        if let Some(last_daily_cleanup_time) = cache_ctx.last_daily_cleanup_time {
-            if now - last_daily_cleanup_time >= ChronoDuration::from_std(cache_ctx.daily_cleanup_interval).unwrap() {
-                info!("Performing daily cleanup");
+            if should_start_cleanup {
+                info!("CACHE: Starting daily cleanup at {}", now);
+                cache_ctx.cleanup_in_progress = true;
                 cache_ctx.keys = cache_ctx.instance.iter().collect();
-                info!("Collected {} cache keys", cache_ctx.keys.len());
-                cache_ctx.last_daily_cleanup_time = Some(now);
-                info!("Updated last daily cleanup time: {}", now);
+                info!("CACHE: Collected {} cache keys", cache_ctx.keys.len());
+                cache_ctx.keys_processed = 0;
+                cache_ctx.last_cleanup_batch_time = Some(now);
+                cache_ctx.last_cleanup_date = Some(now);
             }
-        } else {
-            info!("Performing initial daily cleanup");
-            cache_ctx.keys = cache_ctx.instance.iter().collect();
-            info!("Collected {} cache keys", cache_ctx.keys.len());
-            cache_ctx.last_daily_cleanup_time = Some(now);
-            info!("Set last daily cleanup time: {}", now);
         }
 
-        let start_time = Instant::now();
-        let mut processed_keys = 0;
+        // Check if we can continue the cleanup
+        if cache_ctx.cleanup_in_progress {
+            if let Some(last_batch_time) = cache_ctx.last_cleanup_batch_time {
+                if now - last_batch_time < ChronoDuration::from_std(cache_ctx.cleanup_continue_interval).unwrap() {
+                    // Not enough time has passed since the last batch, skip this run
+                    return Ok(());
+                }
+            }
 
-        for key in cache_ctx.keys.iter().skip(cache_ctx.keys_processed) {
-            if let Ok(key_str) = std::str::from_utf8(key) {
-                if let Some(value) = cache_ctx.instance.get::<String>(key_str) {
-                    let mut record_set = ACLRecordSet::new();
-                    let (_, timestamp) = decode_rec_to_rightset(&value, &mut record_set);
-                    if let Some(timestamp) = timestamp {
-                        if now - timestamp > expiration_duration {
-                            cache_ctx.instance.remove(key_str);
-                            info!("Removed expired cache entry: {:?}, timestamp: {:?}", key_str, timestamp);
+            let start_time = Instant::now();
+            let mut processed_keys = 0;
+            let expiration_duration = ChronoDuration::from_std(cache_ctx.expiration).unwrap();
+
+            for key in cache_ctx.keys.iter().skip(cache_ctx.keys_processed) {
+                if let Ok(key_str) = std::str::from_utf8(key) {
+                    if let Some(value) = cache_ctx.instance.get::<String>(key_str) {
+                        let mut record_set = ACLRecordSet::new();
+                        let (_, timestamp) = decode_rec_to_rightset(&value, &mut record_set);
+                        if let Some(timestamp) = timestamp {
+                            if now - timestamp > expiration_duration {
+                                cache_ctx.instance.remove(key_str);
+                                info!("CACHE: Removed expired cache entry: {:?}, timestamp: {:?}", key_str, timestamp);
+                            }
+                        } else {
+                            warn!("CACHE: Failed to parse timestamp for key: {:?}, timestamp: {:?}", key_str, timestamp);
                         }
                     } else {
-                        warn!("Failed to parse timestamp for key: {:?}, timestamp: {:?}", key_str, timestamp);
+                        info!("CACHE: Value not found for key: {:?}", key_str);
                     }
                 } else {
-                    info!("Value not found for key: {:?}", key_str);
+                    warn!("CACHE: Failed to convert key to string: {:?}", key);
                 }
-            } else {
-                warn!("Failed to convert key to string: {:?}", key);
+
+                processed_keys += 1;
+                cache_ctx.keys_processed += 1;
+
+                if start_time.elapsed() >= cache_ctx.cleanup_batch_time_limit {
+                    info!("CACHE: Processed {} keys in {} ms", processed_keys, start_time.elapsed().as_millis());
+                    cache_ctx.last_cleanup_batch_time = Some(now);
+                    return Ok(());
+                }
             }
 
-            processed_keys += 1;
-            cache_ctx.keys_processed += 1;
-
-            if start_time.elapsed() >= cache_ctx.batch_time_limit {
-                info!("Processed {} keys in {} ms", processed_keys, start_time.elapsed().as_millis());
-                break;
-            }
-        }
-
-        if cache_ctx.keys_processed >= cache_ctx.keys.len() {
+            // All keys processed
             cache_ctx.keys_processed = 0;
-            info!("All keys processed, resetting processed count");
+            cache_ctx.cleanup_in_progress = false;
+            cache_ctx.last_cleanup_batch_time = None;
+            info!("CACHE: All keys processed, cleanup completed");
         }
     }
 
@@ -218,7 +228,7 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
 
             processed_file_found = true;
 
-            info!("Processing file: {:?}", processed_path);
+            info!("CACHE: Processing file: {:?}", processed_path);
 
             let file = File::open(&processed_path)?;
             let reader = BufReader::new(file);
@@ -245,7 +255,7 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                 match parts[0].parse::<DateTime<Utc>>() {
                     Ok(timestamp) => timestamp,
                     Err(_) => {
-                        error!("CACHE: fail parse date: {:?}", parts[0]);
+                        error!("CACHE: Fail parse date: {:?}", parts[0]);
                         continue;
                     },
                 };
@@ -263,7 +273,7 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                     let count = match identifier_parts[1].parse::<usize>() {
                         Ok(count) => count,
                         Err(_) => {
-                            error!("CACHE: fail parse count: {}", identifier_str);
+                            error!("CACHE: Fail parse count: {}", identifier_str);
                             continue;
                         },
                     };
@@ -289,9 +299,9 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                             let (_, _) = decode_rec_to_rightset(&value, &mut record_set);
                             let new_value = encode_record(Some(Utc::now()), &record_set, ctx.version_of_index_format);
                             if !cache_ctx.instance.put(identifier, new_value.clone()) {
-                                error!("CACHE: fail store to cache db: {}, {}", identifier_str, new_value);
+                                error!("CACHE: Fail store to cache db: {}, {}", identifier_str, new_value);
                             } else {
-                                info!("CACHE: add: id={}, count={}", identifier, count);
+                                info!("CACHE: Add: id={}, count={}", identifier, count);
                             }
                         },
                         None => continue,
@@ -308,7 +318,7 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
 
             // Обработка завершена, переименование обработанного файла
             std::fs::rename(&processed_path, processed_path.with_extension("ok"))?;
-            info!("Processed file: {:?}", processed_path);
+            info!("CACHE: Complete processing file: {:?}", processed_path);
             processed_file = None;
             line_number = 0;
         }
