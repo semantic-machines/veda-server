@@ -20,11 +20,18 @@ use std::{
     thread,
     time::Duration as StdDuration,
 };
+use std::collections::BTreeMap;
 
 const DATA_DIR: &str = "./data/stat";
 
+#[derive(Default, Clone, Copy)]
+struct MinuteStats {
+    total_time: u64,
+    count: u64,
+}
+
 fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
-    let mut result = std::collections::BTreeMap::new();
+    let mut result = BTreeMap::new();
 
     let file = fs::File::open(file_name)?;
     let reader = std::io::BufReader::new(file);
@@ -34,6 +41,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
     let mut cache_miss_count = 0;
     let mut total_auth_count = 0;
     let mut total_auth_time = 0;
+    let mut per_minute_auth_time = BTreeMap::new();
 
     for line in reader.lines() {
         let line = line?;
@@ -88,7 +96,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
             },
         };
 
-        let counter = result.entry(key).or_insert_with(std::collections::BTreeMap::new);
+        let counter = result.entry(key).or_insert_with(BTreeMap::new);
         for identifier in identifiers.split(';') {
             let (identifier, source) = match identifier.split_once('/') {
                 Some((identifier, source)) => (identifier.to_string(), source),
@@ -113,6 +121,11 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
 
             *counter.entry(identifier).or_insert(0) += 1;
         }
+
+        let minute_key = timestamp.format("%Y-%m-%d %H:%M:00Z").to_string();
+        let minute_stats = per_minute_auth_time.entry(minute_key).or_insert(MinuteStats::default());
+        minute_stats.total_time += auth_time;
+        minute_stats.count += 1;
     }
 
     let log_file_name = format!("{}.log", file_name);
@@ -133,6 +146,14 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
         let identifier_counts: Vec<String> = sorted_identifiers.into_iter().map(|(identifier, count)| format!("{},{}", identifier, count)).collect();
 
         writeln!(processed_file, "{};{}", timestamp, identifier_counts.join(";"))?;
+    }
+
+    let avg_auth_time_file_name = format!("{}.avg_auth_time.csv", file_name);
+    let mut avg_auth_time_file = fs::File::create(&avg_auth_time_file_name)?;
+
+    for (minute, stats) in &per_minute_auth_time {
+        let avg_time = stats.total_time / stats.count;
+        writeln!(avg_auth_time_file, "{},{},{}", minute, avg_time, stats.count)?;
     }
 
     Ok(())
