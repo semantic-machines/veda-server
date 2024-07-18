@@ -30,6 +30,8 @@ struct MinuteStats {
     count: u64,
 }
 
+const TOP_AUTH_COUNT: usize = 30;
+
 fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
     let mut result = BTreeMap::new();
 
@@ -42,6 +44,7 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
     let mut total_auth_count = 0;
     let mut total_auth_time = 0;
     let mut per_minute_auth_time = BTreeMap::new();
+    let mut top_auth_times: Vec<(u64, String, String, u32)> = Vec::new();
 
     for line in reader.lines() {
         let line = line?;
@@ -68,16 +71,16 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
         total_auth_count += 1;
         total_auth_time += auth_time;
 
-        let timestamp = match timestamp_sender.split_once('|') {
-            Some((timestamp, _sender)) => timestamp,
+        let (timestamp, sender) = match timestamp_sender.split_once('|') {
+            Some((timestamp, sender)) => (timestamp, sender),
             None => {
                 debug!("Skipping line: {}", line);
                 continue;
             },
         };
 
-        let timestamp = match NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S%.3fZ") {
-            Ok(ts) => ts,
+        let timestamp = match DateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S%.3fZ") {
+            Ok(ts) => ts.with_timezone(&Utc),
             Err(e) => {
                 error!("Error parsing timestamp: {}", timestamp);
                 error!("Error message: {}", e);
@@ -85,6 +88,40 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
                 continue;
             },
         };
+
+        let mut db_requests_count = 0;
+        for identifier in identifiers.split(';') {
+            let (_, source) = match identifier.split_once('/') {
+                Some((identifier, source)) => (identifier.to_string(), source),
+                None => {
+                    debug!("Skipping identifier: {}", identifier);
+                    continue;
+                },
+            };
+
+            match source {
+                "C" => cache_count += 1,
+                "B" => {
+                    db_count += 1;
+                    db_requests_count += 1;
+                },
+                "cB" => {
+                    cache_miss_count += 1;
+                    db_count += 1;
+                    db_requests_count += 1;
+                },
+                _ => {
+                    debug!("Unknown source: {}", source);
+                    continue;
+                },
+            }
+        }
+
+        top_auth_times.push((auth_time, timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true), sender.to_string(), db_requests_count));
+        top_auth_times.sort_by(|a, b| b.0.cmp(&a.0));
+        if top_auth_times.len() > TOP_AUTH_COUNT {
+            top_auth_times.pop();
+        }
 
         let key = match quantum {
             "hour" => timestamp.format("%Y-%m-%d %H:00:00Z").to_string(),
@@ -98,26 +135,13 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
 
         let counter = result.entry(key).or_insert_with(BTreeMap::new);
         for identifier in identifiers.split(';') {
-            let (identifier, source) = match identifier.split_once('/') {
+            let (identifier, _) = match identifier.split_once('/') {
                 Some((identifier, source)) => (identifier.to_string(), source),
                 None => {
                     debug!("Skipping identifier: {}", identifier);
                     continue;
                 },
             };
-
-            match source {
-                "C" => cache_count += 1,
-                "B" => db_count += 1,
-                "cB" => {
-                    cache_miss_count += 1;
-                    db_count += 1;
-                },
-                _ => {
-                    debug!("Unknown source: {}", source);
-                    continue;
-                },
-            }
 
             *counter.entry(identifier).or_insert(0) += 1;
         }
@@ -135,6 +159,12 @@ fn process_file(file_name: &str, quantum: &str) -> std::io::Result<()> {
     writeln!(log_file, "Cache misses: {}", cache_miss_count)?;
     writeln!(log_file, "Total authentications: {}", total_auth_count)?;
     writeln!(log_file, "Total authentication time: {}", format_duration(StdDuration::from_micros(total_auth_time)))?;
+
+    writeln!(log_file, "Top {} longest authentications:", TOP_AUTH_COUNT)?;
+    writeln!(log_file, "Time (μs) | Timestamp           | Sender ID | DB Requests")?;
+    for (auth_time, timestamp, sender, db_requests) in &top_auth_times {
+        writeln!(log_file, "{:>9} | {} | {} | {:>11}", auth_time, timestamp, sender, db_requests)?;
+    }
 
     let processed_file_name = format!("{}.processed", file_name);
     let mut processed_file = fs::File::create(&processed_file_name)?;
