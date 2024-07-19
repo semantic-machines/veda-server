@@ -21,7 +21,7 @@ use v_common::search::clickhouse_client::CHClient;
 use v_common::search::common::{load_prefixes, AuthorizationLevel, FTQuery, PrefixesCache, QueryResult, ResultFormat};
 use v_common::search::sparql_client::SparqlClient;
 use v_common::search::sparql_params::prepare_sparql_params;
-use v_common::search::sql_params::prepare_sql_with_params;
+use v_common::search::sql_params::parse_sql_query_arguments;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::obj::{OptAuthorize, ResultCode};
 
@@ -172,7 +172,7 @@ async fn stored_query_impl(
 
             match source.as_str() {
                 "clickhouse" => {
-                    if let Ok(sql) = prepare_sql_with_params(&query_string, &mut params, &source) {
+                    if let Ok(sql) = parse_sql_query_arguments(&query_string, &mut params, &source) {
                         info!("{sql}");
                         let res = query_endpoints.ch_client.lock().await.query_select_async(&uinf.user_id, &sql, result_format, authorization_level, &az).await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
@@ -241,7 +241,7 @@ async fn direct_query_impl(
         };
         log(None, &uinf, "query", &format!("{}, top = {}, limit = {}, from = {}", &req.query, req.top, req.limit, req.from), ResultCode::Ok);
 
-        match prepare_sql_with_params(&req.query.replace('`', "\""), &mut Individual::default(), "clickhouse") {
+        match parse_sql_query_arguments(&req.query.replace('`', "\""), &mut Individual::default(), "clickhouse") {
             Ok(sql) => {
                 //info!("{sql}");
                 req.query = sql;
