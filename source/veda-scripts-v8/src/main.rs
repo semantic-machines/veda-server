@@ -7,7 +7,8 @@ extern crate scan_fmt;
 #[macro_use]
 extern crate version;
 
-use crate::stat_file::{initialize_stats_file, write_stats, StatsFile};
+use crate::stat_file::{write_stats};
+use crate::command_handler::{StatsCollector, handle_nng_commands};
 use git_version::git_version;
 use std::process::exit;
 use std::sync::Mutex;
@@ -28,9 +29,12 @@ use v_v8::v_common::storage::common::StorageMode;
 use v_v8::v_common::v_api::api_client::MStorageClient;
 use v_v8::v_common::v_queue::consumer::Consumer;
 use v_v8::v_common::v_queue::record::Mode;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 mod processor;
 mod stat_file;
+mod command_handler;
 
 const MAX_COUNT_LOOPS: i32 = 100;
 const MAIN_QUEUE_CS: &str = "scripts_main0";
@@ -70,7 +74,7 @@ pub struct MyContext<'a> {
     pub queue_name: String,
     pub count_exec: i64,
     pub module_info: ModuleInfo,
-    pub stats_file: Option<StatsFile>,
+    pub stats_collector: Arc<StatsCollector>,
 }
 
 fn main() -> Result<(), i32> {
@@ -120,7 +124,7 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
     }
 
     let process_name = "scripts_".to_owned() + vm_id;
-    let consumer_name = &(process_name.to_owned() + "0");
+    let consumer_name = format!("{}0", process_name);
     let main_queue_name = "individuals-flow";
 
     let module_info = ModuleInfo::new("./data", &process_name, true);
@@ -130,13 +134,8 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
     }
 
     if let Some(xr) = XapianReader::new("russian", &mut backend.storage) {
-        let stats_file = match initialize_stats_file(&consumer_name) {
-            Ok(file) => Some(file),
-            Err(e) => {
-                error!("Не удалось инициализировать файл статистики: {:?}", e);
-                None
-            },
-        };
+        let stats_collector = Arc::new(StatsCollector::new());
+        let stats_collector_clone = Arc::clone(&stats_collector);
 
         let mut ctx = MyContext {
             api_client: MStorageClient::new(Module::get_property("main_module_url").unwrap_or_default()),
@@ -145,12 +144,20 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
             vm_id: "main".to_owned(),
             sys_ticket: w_sys_ticket.unwrap(),
             main_queue_cs: None,
-            queue_name: consumer_name.to_owned(),
+            queue_name: consumer_name,
             count_exec: 0,
             xr,
             module_info: module_info.unwrap(),
-            stats_file,
+            stats_collector,
         };
+
+        let tmp_cn = ctx.queue_name.clone();
+
+        thread::spawn(move || {
+            if let Err(e) = handle_nng_commands(stats_collector_clone, tmp_cn) {
+                error!("NNG command handler error: {:?}", e);
+            }
+        });
 
         if vm_id.starts_with("lp") {
             if let Ok(lp_id) = scan_fmt!(vm_id, "lp{}", i32) {
@@ -172,7 +179,7 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
 
         let mut module = Module::default();
 
-        let mut queue_consumer = Consumer::new("./data/queue", consumer_name, main_queue_name).expect("!!!!!!!!! FAIL OPEN RW CONSUMER");
+        let mut queue_consumer = Consumer::new("./data/queue", &ctx.queue_name, main_queue_name).expect("!!!!!!!!! FAIL OPEN RW CONSUMER");
 
         if vm_id.starts_with("lp") {
             loop {
@@ -201,10 +208,13 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
 }
 
 fn heartbeat(_module: &mut Backend, ctx: &mut MyContext) -> Result<(), PrepareError> {
-    if let Some(stats_file) = &mut ctx.stats_file {
-        if let Err(e) = stats_file.check_flush() {
-            error!("Не удалось завершить запись статистики в файл: {:?}", e);
-            return Err(PrepareError::Fatal);
+    if ctx.stats_collector.collect_stats.load(Ordering::Relaxed) {
+        let mut stats_file = ctx.stats_collector.stats_file.lock().unwrap();
+        if let Some(file) = stats_file.as_mut() {
+            if let Err(e) = file.check_flush() {
+                error!("Не удалось завершить запись статистики в файл: {:?}", e);
+                return Err(PrepareError::Fatal);
+            }
         }
     }
     Ok(())
@@ -245,10 +255,13 @@ fn prepare(_module: &mut Backend, ctx: &mut MyContext, queue_element: &mut Indiv
     };
 
     // Запись статистики
-    if let Some(stats_file) = &mut ctx.stats_file {
-        if let Err(e) = write_stats(stats_file, op_id, new_individuals_count) {
-            error!("Не удалось записать статистику: {:?}", e);
-            return Err(PrepareError::Fatal);
+    if ctx.stats_collector.collect_stats.load(Ordering::Relaxed) {
+        let mut stats_file = ctx.stats_collector.stats_file.lock().unwrap();
+        if let Some(file) = stats_file.as_mut() {
+            if let Err(e) = write_stats(file, op_id, new_individuals_count) {
+                error!("Не удалось записать статистику: {:?}", e);
+                return Err(PrepareError::Fatal);
+            }
         }
     }
 
