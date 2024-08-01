@@ -26,6 +26,12 @@ pub(crate) const BASE_PATH: &str = "./data";
 
 pub type UserId = String;
 
+#[derive(Clone)]
+pub struct NLPServerConfig {
+    pub whisper_server_url: String,
+    pub llama_server_url: String,
+}
+
 pub struct UserContextCache {
     pub read_tickets: evmap::ReadHandle<String, Ticket>,
     pub write_tickets: Arc<Mutex<evmap::WriteHandle<String, Ticket>>>,

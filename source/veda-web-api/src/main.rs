@@ -2,6 +2,7 @@ extern crate version;
 #[macro_use]
 extern crate log;
 
+mod nlp_processing;
 mod auth;
 mod common;
 mod files;
@@ -16,8 +17,9 @@ mod webdav;
 extern crate serde_derive;
 extern crate serde_json;
 
+use crate::nlp_processing::{augment_text, recognize_audio};
 use crate::auth::{authenticate_get, authenticate_post, get_membership, get_rights, get_rights_origin, get_ticket_trusted, is_ticket_valid, logout};
-use crate::common::{db_connector, UserContextCache, VQLClient, VQLClientConnectType};
+use crate::common::{db_connector, NLPServerConfig, UserContextCache, VQLClient, VQLClientConnectType};
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
@@ -187,6 +189,11 @@ async fn main() -> std::io::Result<()> {
             }
         }
 
+        let nlp_server_config = NLPServerConfig {
+            whisper_server_url: Module::get_property("whisper_server_url").unwrap_or_else(|| "http://localhost:8086".to_string()),
+            llama_server_url: Module::get_property("llama_server_url").unwrap_or_else(|| "http://localhost:8087".to_string()),
+        };
+
         let check_ticket_ip = Module::get_property::<String>("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
         info!("PARAM [check_ticket_ip] = {check_ticket_ip}");
         let (ticket_cache_read, ticket_cache_write) = evmap::new();
@@ -214,6 +221,7 @@ async fn main() -> std::io::Result<()> {
             )
             .app_data(json_cfg)
             .data(mfp)
+            .app_data( web::Data::new(nlp_server_config))
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
                 read_tickets: ticket_cache_read,
@@ -261,6 +269,8 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/query").route(web::get().to(query_get)).route(web::post().to(query_post)))
             .service(web::resource("/stored_query").route(web::post().to(stored_query)))
             .service(web::resource("/authenticate").route(web::get().to(authenticate_get)).route(web::post().to(authenticate_post)))
+            .service(web::resource("/recognize_audio").route(web::post().to(recognize_audio)))
+            .service(web::resource("/augment_text").route(web::post().to(augment_text)))
             .service(
                 web::scope("/webdav")
                     // Применяем NormalizePath middleware
