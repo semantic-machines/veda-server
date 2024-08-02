@@ -11,12 +11,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use async_std::path::Path;
-use reqwest::{Client, multipart};
 use serde_json::Value;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
+use regex::RegexBuilder;
+use tokio::process::Command;
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
@@ -34,13 +35,15 @@ struct LlamaRequest {
     n_predict: i32,
 }
 
+#[derive(Deserialize)]
+struct PhrasesToRemove {
+    phrases: Vec<String>,
+}
+
 async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     while let Ok(Some(mut field)) = payload.try_next().await {
         let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f").to_string();
-        let filepath = format!("/tmp/audio_{}.ogg\
-        \
-        \
-        ", timestamp);
+        let filepath = format!("/tmp/audio_{}.ogg", timestamp);
 
         let mut f = fs::File::create(&filepath).await?;
         let mut total_size = 0;
@@ -69,9 +72,6 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     Err(actix_web::error::ErrorBadRequest("Could not save file"))
 }
 
-use tokio::process::Command;
-
-
 async fn convert_audio(input_path: &str, output_path: &str) -> Result<(), actix_web::Error> {
     info!("Starting audio conversion from {} to {}", input_path, output_path);
 
@@ -95,6 +95,18 @@ async fn convert_audio(input_path: &str, output_path: &str) -> Result<(), actix_
     info!("Audio conversion completed successfully");
 
     Ok(())
+}
+
+fn clean_text(text: &str, phrases: &[String]) -> String {
+    let mut cleaned_text = text.to_string();
+    for phrase in phrases {
+        let re = RegexBuilder::new(&regex::escape(phrase))
+            .case_insensitive(true)
+            .build()
+            .unwrap();
+        cleaned_text = re.replace_all(&cleaned_text, "").to_string();
+    }
+    cleaned_text.trim().to_string()
 }
 
 async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
@@ -153,7 +165,16 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
     fs::remove_file(&output_path).await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e)))?;
 
-    Ok(transcription)
+    // Загрузка фраз для удаления
+    let phrases_text = fs::read_to_string("nlp_phrases_to_remove.toml").await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read phrases_to_remove.toml: {}", e)))?;
+    let phrases_to_remove: PhrasesToRemove = toml::from_str(&phrases_text)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to parse phrases_to_remove.toml: {}", e)))?;
+
+    // Очистка транскрипции
+    let cleaned_transcription = clean_text(&transcription, &phrases_to_remove.phrases);
+
+    Ok(cleaned_transcription)
 }
 
 pub async fn recognize_audio(
