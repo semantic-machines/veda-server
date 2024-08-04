@@ -2,12 +2,12 @@ extern crate version;
 #[macro_use]
 extern crate log;
 
-mod nlp_processing;
 mod auth;
 mod common;
 mod files;
 mod get;
 mod multifactor;
+mod nlp_processing;
 mod query;
 mod update;
 mod user_activity;
@@ -17,12 +17,12 @@ mod webdav;
 extern crate serde_derive;
 extern crate serde_json;
 
-use crate::nlp_processing::{augment_text, recognize_audio};
 use crate::auth::{authenticate_get, authenticate_post, get_membership, get_rights, get_rights_origin, get_ticket_trusted, is_ticket_valid, logout};
 use crate::common::{db_connector, NLPServerConfig, UserContextCache, VQLClient, VQLClientConnectType};
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
+use crate::nlp_processing::{augment_text, recognize_audio};
 use crate::query::{query_get, query_post, stored_query, QueryEndpoints};
 use crate::update::{add_to_individual, put_individual, put_individuals, remove_from_individual, remove_individual, set_in_individual};
 use crate::user_activity::user_activity_manager;
@@ -221,7 +221,7 @@ async fn main() -> std::io::Result<()> {
             )
             .app_data(json_cfg)
             .data(mfp)
-            .app_data( web::Data::new(nlp_server_config))
+            .app_data(web::Data::new(nlp_server_config))
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
                 read_tickets: ticket_cache_read,
