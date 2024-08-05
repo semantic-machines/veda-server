@@ -1,18 +1,21 @@
 use crate::common::{extract_addr, get_user_info, log, log_w, NLPServerConfig, TicketRequest, UserContextCache, UserId};
 use actix_multipart::Multipart;
 use actix_web::http::StatusCode;
-use actix_web::{web, HttpRequest, HttpResponse, Result};
+use actix_web::{web, Error, HttpRequest, HttpResponse};
 use async_std::path::Path;
+use bytes::Bytes;
 use chrono::Utc;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
-use futures::{StreamExt, TryStreamExt};
+use futures::task::{Context, Poll};
+use futures::{Stream, StreamExt, TryStreamExt};
 use regex::RegexBuilder;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::File;
 use std::io::Read;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs;
@@ -26,9 +29,6 @@ const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 #[derive(Deserialize)]
 pub struct AugmentTextRequest {
     text: String,
-    #[serde(rename = "type")]
-    type_: String,
-    property: String,
 }
 
 #[derive(Serialize)]
@@ -197,26 +197,51 @@ pub struct LlamaConfig {
     pub system_prompt: String,
     pub temperature: f32,
     pub n_predict_factor: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub min_p: f32,
+    pub repeat_penalty: f32,
+    pub presence_penalty: f32,
+    pub frequency_penalty: f32,
+    pub mirostat: i32,
+    pub mirostat_tau: f32,
+    pub mirostat_eta: f32,
     pub stop: Vec<String>,
 }
 
 impl Default for LlamaConfig {
     fn default() -> Self {
         LlamaConfig {
-            prompt_template: "Исправь следующий текст: {}".to_string(),
-            system_prompt: "Ваша задача - проверить и исправить текст, полученный в результате распознавания речи.".to_string(),
+            prompt_template: "User: {}\nLlama:".to_string(),
+            system_prompt: "You are a helpful assistant.".to_string(),
             temperature: 0.8,
             n_predict_factor: 1.2,
-            stop: vec!["\n".to_string()],
+            top_k: 40,
+            top_p: 0.95,
+            min_p: 0.05,
+            repeat_penalty: 1.1,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            mirostat: 0,
+            mirostat_tau: 5.0,
+            mirostat_eta: 0.1,
+            stop: vec!["</s>".to_string(), "User:".to_string()],
         }
     }
 }
+
 fn load_llama_config(config_path: &str) -> Result<LlamaConfig, Box<dyn std::error::Error>> {
     let mut file = File::open(config_path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     let config: LlamaConfig = toml::from_str(&contents)?;
     Ok(config)
+}
+
+#[derive(serde::Serialize)]
+struct StreamChunk {
+    content: String,
+    is_end: bool,
 }
 
 pub async fn augment_text(
@@ -227,7 +252,7 @@ pub async fn augment_text(
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     nlp_config: web::Data<NLPServerConfig>,
-) -> Result<HttpResponse, actix_web::Error> {
+) -> Result<HttpResponse, Error> {
     let start_time = Instant::now();
 
     log::info!("Starting augment_text function");
@@ -254,36 +279,41 @@ pub async fn augment_text(
 
     let client = reqwest::Client::new();
 
-    let full_prompt = format!("{}\n\nUser: {}\nLlama:", llama_config.system_prompt, payload.text);
+    let full_prompt = format!("{}\n\n{}", llama_config.system_prompt, llama_config.prompt_template.replace("{}", &payload.text));
 
     log::debug!("Full prompt: {}", full_prompt);
 
+    let input_length = payload.text.split_whitespace().count();
+    let n_predict = (input_length as f32 * llama_config.n_predict_factor).round() as i32;
+
+    log::info!("Calculated n_predict: {}", n_predict);
+
     let llama_request = json!({
+        "prompt": full_prompt,
         "stream": true,
-        "n_predict": 400,
-        "temperature": 0.7,
-        "stop": ["</s>","<|end|>","<|eot_id|>","<|end_of_text|>","<|im_end|>","<|EOT|>","<|END_OF_TURN_TOKEN|>","<|end_of_turn|>","<|endoftext|>","Llama","User"],
+        "n_predict": n_predict,
+        "temperature": llama_config.temperature,
+        "top_k": llama_config.top_k,
+        "top_p": llama_config.top_p,
+        "min_p": llama_config.min_p,
+        "repeat_penalty": llama_config.repeat_penalty,
+        "presence_penalty": llama_config.presence_penalty,
+        "frequency_penalty": llama_config.frequency_penalty,
+        "mirostat": llama_config.mirostat,
+        "mirostat_tau": llama_config.mirostat_tau,
+        "mirostat_eta": llama_config.mirostat_eta,
+        "stop": llama_config.stop,
         "repeat_last_n": 256,
-        "repeat_penalty": 1.18,
         "penalize_nl": false,
-        "top_k": 40,
-        "top_p": 0.95,
-        "min_p": 0.05,
         "tfs_z": 1,
         "typical_p": 1,
-        "presence_penalty": 0,
-        "frequency_penalty": 0,
-        "mirostat": 0,
-        "mirostat_tau": 5,
-        "mirostat_eta": 0.1,
         "grammar": "",
         "n_probs": 0,
         "min_keep": 0,
         "image_data": [],
         "cache_prompt": true,
         "api_key": "",
-        "slot_id": -1,
-        "prompt": full_prompt
+        "slot_id": -1
     });
 
     log::debug!("LLaMA request: {}", serde_json::to_string_pretty(&llama_request).unwrap());
@@ -306,33 +336,65 @@ pub async fn augment_text(
 
     log::info!("Received successful response from LLaMA server");
 
-    let mut full_text = String::new();
-    let mut stream = response.bytes_stream();
+    let stream = response.bytes_stream();
 
-    while let Some(item) = stream.next().await {
-        let chunk = item.map_err(|e| actix_web::error::ErrorInternalServerError(format!("Error reading stream: {}", e)))?;
-        let chunk_str = String::from_utf8_lossy(&chunk);
-        for line in chunk_str.lines() {
-            if line.starts_with("data: ") {
-                let data = &line["data: ".len()..];
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                    if let Some(content) = json["content"].as_str() {
-                        full_text.push_str(content);
-                    }
-                    if json["stop"].as_bool() == Some(true) {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    log::info!("Successfully extracted augmented text");
-    log::debug!("Augmented text: {}", full_text);
+    let filtered_stream = stream.flat_map(|chunk_result| {
+        futures::stream::iter(match chunk_result {
+            Ok(chunk) => {
+                let chunk_str = String::from_utf8_lossy(&chunk);
+                chunk_str
+                    .lines()
+                    .filter_map(|line| {
+                        if line.starts_with("data: ") {
+                            let data = &line["data: ".len()..];
+                            serde_json::from_str::<Value>(data).ok().and_then(|json| {
+                                if let Some(content) = json["content"].as_str() {
+                                    let stream_chunk = StreamChunk {
+                                        content: content.to_string(),
+                                        is_end: json["stop"].as_bool().unwrap_or(false),
+                                    };
+                                    Some(Ok(Bytes::from(serde_json::to_string(&stream_chunk).unwrap())))
+                                } else if json["stop"].as_bool() == Some(true) {
+                                    let stream_chunk = StreamChunk {
+                                        content: String::new(),
+                                        is_end: true,
+                                    };
+                                    Some(Ok(Bytes::from(serde_json::to_string(&stream_chunk).unwrap())))
+                                } else {
+                                    None
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            },
+            Err(e) => vec![Err(actix_web::error::ErrorInternalServerError(format!("Error reading stream: {}", e)))],
+        })
+    });
 
     log(Some(&start_time), &uinf, "augment_text", "success", ResultCode::Ok);
 
     log::info!("Augment_text function completed successfully");
 
-    Ok(HttpResponse::Ok().content_type("text/plain").body(full_text))
+    Ok(HttpResponse::Ok().content_type("application/json").streaming(filtered_stream))
+}
+// Адаптер для преобразования Stream в тип, который ожидает actix-web 3
+struct StreamAdapter<S>(S);
+
+impl<S> Stream for StreamAdapter<S>
+where
+    S: Stream<Item = Result<String, Error>> + Unpin,
+{
+    type Item = Result<bytes::Bytes, Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.0).poll_next(cx) {
+            Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(bytes::Bytes::from(item)))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
