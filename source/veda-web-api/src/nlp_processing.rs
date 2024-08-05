@@ -207,8 +207,11 @@ pub struct LlamaConfig {
     pub mirostat_tau: f32,
     pub mirostat_eta: f32,
     pub stop: Vec<String>,
+    pub repeat_last_n: i32,
+    pub penalize_nl: bool,
+    pub tfs_z: f32,
+    pub typical_p: f32,
 }
-
 impl Default for LlamaConfig {
     fn default() -> Self {
         LlamaConfig {
@@ -226,6 +229,10 @@ impl Default for LlamaConfig {
             mirostat_tau: 5.0,
             mirostat_eta: 0.1,
             stop: vec!["</s>".to_string(), "User:".to_string()],
+            repeat_last_n: 0,
+            penalize_nl: false,
+            tfs_z: 0.0,
+            typical_p: 0.0,
         }
     }
 }
@@ -255,7 +262,7 @@ pub async fn augment_text(
 ) -> Result<HttpResponse, Error> {
     let start_time = Instant::now();
 
-    log::info!("Starting augment_text function");
+    info!("Starting augment_text function");
 
     let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
@@ -276,6 +283,7 @@ pub async fn augment_text(
     };
 
     log::info!("LLaMA config loaded successfully");
+    info!("PROMPT: {}", llama_config.system_prompt);
 
     let client = reqwest::Client::new();
 
@@ -289,31 +297,31 @@ pub async fn augment_text(
     log::info!("Calculated n_predict: {}", n_predict);
 
     let llama_request = json!({
-        "prompt": full_prompt,
         "stream": true,
         "n_predict": n_predict,
         "temperature": llama_config.temperature,
+        "stop": llama_config.stop,
+        "repeat_last_n": llama_config.repeat_last_n,
+        "repeat_penalty": llama_config.repeat_penalty,
+        "penalize_nl": llama_config.penalize_nl,
         "top_k": llama_config.top_k,
         "top_p": llama_config.top_p,
         "min_p": llama_config.min_p,
-        "repeat_penalty": llama_config.repeat_penalty,
+        "tfs_z": llama_config.tfs_z,
+        "typical_p": llama_config.typical_p,
         "presence_penalty": llama_config.presence_penalty,
         "frequency_penalty": llama_config.frequency_penalty,
         "mirostat": llama_config.mirostat,
         "mirostat_tau": llama_config.mirostat_tau,
         "mirostat_eta": llama_config.mirostat_eta,
-        "stop": llama_config.stop,
-        "repeat_last_n": 256,
-        "penalize_nl": false,
-        "tfs_z": 1,
-        "typical_p": 1,
         "grammar": "",
         "n_probs": 0,
         "min_keep": 0,
         "image_data": [],
         "cache_prompt": true,
         "api_key": "",
-        "slot_id": -1
+        "slot_id": -1,
+        "prompt": full_prompt
     });
 
     log::debug!("LLaMA request: {}", serde_json::to_string_pretty(&llama_request).unwrap());
