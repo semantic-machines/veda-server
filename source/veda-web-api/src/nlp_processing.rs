@@ -9,6 +9,7 @@ use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::task::{Context, Poll};
 use futures::{Stream, StreamExt, TryStreamExt};
+use futures::stream::{self};
 use regex::RegexBuilder;
 use reqwest;
 use serde::{Deserialize, Serialize};
@@ -252,49 +253,48 @@ struct StreamChunk {
 }
 
 pub async fn augment_text(
-    params: web::Query<TicketRequest>,
+    params: web::Json<AugmentTextRequest>,
     ticket_cache: web::Data<UserContextCache>,
     req: HttpRequest,
-    payload: web::Json<AugmentTextRequest>,
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     nlp_config: web::Data<NLPServerConfig>,
 ) -> Result<HttpResponse, Error> {
-    let start_time = Instant::now();
-
     info!("Starting augment_text function");
 
-    let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, &activity_sender).await {
+    let ticket_value = req
+        .headers()
+        .get("Cookie")
+        .and_then(|cookie| {
+            cookie
+                .to_str()
+                .ok()
+                .and_then(|c| c.split("; ").find(|s| s.starts_with("ticket=")))
+                .map(|s| s["ticket=".len()..].to_string())  // Изменила возвращаемое значение с ссылки на строку
+        });
+
+    if ticket_value.is_none() {
+        return Ok(HttpResponse::Unauthorized().finish());
+    }
+
+    let uinf = match get_user_info(Some(ticket_value.unwrap()), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
-            log_w(Some(&start_time), &params.ticket, &extract_addr(&req), "", "get_individuals", "", res);
             return Ok(HttpResponse::new(StatusCode::from_u16(res as u16).unwrap()));
         },
     };
 
-    log::info!("User info retrieved successfully");
-
     let llama_config = match load_llama_config("./llama_config.toml") {
         Ok(config) => config,
         Err(e) => {
-            log::error!("Failed to load LLaMA config: {}", e);
             return Err(actix_web::error::ErrorInternalServerError("Failed to load LLaMA configuration"));
         },
     };
 
-    log::info!("LLaMA config loaded successfully");
-    info!("PROMPT: {}", llama_config.system_prompt);
-
     let client = reqwest::Client::new();
-
-    let full_prompt = format!("{}\n\n{}", llama_config.system_prompt, llama_config.prompt_template.replace("{}", &payload.text));
-
-    log::debug!("Full prompt: {}", full_prompt);
-
-    let input_length = payload.text.split_whitespace().count();
+    let full_prompt = format!("{}\n\n{}", llama_config.system_prompt, llama_config.prompt_template.replace("{}", &params.text));
+    let input_length = params.text.split_whitespace().count();
     let n_predict = (input_length as f32 * llama_config.n_predict_factor).round() as i32;
-
-    log::info!("Calculated n_predict: {}", n_predict);
 
     let llama_request = json!({
         "stream": true,
@@ -314,40 +314,25 @@ pub async fn augment_text(
         "mirostat": llama_config.mirostat,
         "mirostat_tau": llama_config.mirostat_tau,
         "mirostat_eta": llama_config.mirostat_eta,
-        "grammar": "",
-        "n_probs": 0,
-        "min_keep": 0,
-        "image_data": [],
-        "cache_prompt": true,
-        "api_key": "",
-        "slot_id": -1,
         "prompt": full_prompt
     });
 
-    log::debug!("LLaMA request: {}", serde_json::to_string_pretty(&llama_request).unwrap());
-
-    log::info!("Sending request to LLaMA server at {}", nlp_config.llama_server_url);
-
-    let response = client
+    let llama_response = client
         .post(&format!("{}/completion", nlp_config.llama_server_url))
         .json(&llama_request)
         .send()
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("llama.cpp server error: {}", e)))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        log::error!("LLaMA server returned error status: {} {}", status, error_text);
+    if !llama_response.status().is_success() {
+        let status = llama_response.status().clone();  // Копируем статус, чтобы избежать перемещения
+        let error_text = llama_response.text().await.unwrap_or_default();
         return Err(actix_web::error::ErrorInternalServerError(format!("llama.cpp server returned error status: {} {}", status, error_text)));
     }
 
-    log::info!("Received successful response from LLaMA server");
-
-    let stream = response.bytes_stream();
-
-    let filtered_stream = stream.flat_map(|chunk_result| {
-        futures::stream::iter(match chunk_result {
+    let byte_stream = llama_response.bytes_stream();
+    let response_stream = byte_stream.flat_map(|chunk| {
+        stream::iter(match chunk {
             Ok(chunk) => {
                 let chunk_str = String::from_utf8_lossy(&chunk);
                 chunk_str
@@ -355,23 +340,13 @@ pub async fn augment_text(
                     .filter_map(|line| {
                         if line.starts_with("data: ") {
                             let data = &line["data: ".len()..];
-                            serde_json::from_str::<Value>(data).ok().and_then(|json| {
-                                if let Some(content) = json["content"].as_str() {
-                                    let stream_chunk = StreamChunk {
-                                        content: content.to_string(),
-                                        is_end: json["stop"].as_bool().unwrap_or(false),
-                                    };
-                                    Some(Ok(Bytes::from(serde_json::to_string(&stream_chunk).unwrap())))
-                                } else if json["stop"].as_bool() == Some(true) {
-                                    let stream_chunk = StreamChunk {
-                                        content: String::new(),
-                                        is_end: true,
-                                    };
-                                    Some(Ok(Bytes::from(serde_json::to_string(&stream_chunk).unwrap())))
-                                } else {
-                                    None
-                                }
-                            })
+                            let json = serde_json::from_str::<serde_json::Value>(data).ok()?;
+                            let content = json.get("content")?.as_str()?.to_string();
+                            let stop = json.get("stop")?.as_bool().unwrap_or(false);
+                            Some(Ok(Bytes::from(format!("data: {}\n\n", serde_json::to_string(&json!({
+                                "content": content,
+                                "stop": stop
+                            })).unwrap()))))
                         } else {
                             None
                         }
@@ -382,12 +357,15 @@ pub async fn augment_text(
         })
     });
 
-    log(Some(&start_time), &uinf, "augment_text", "success", ResultCode::Ok);
-
-    log::info!("Augment_text function completed successfully");
-
-    Ok(HttpResponse::Ok().content_type("application/json").streaming(filtered_stream))
+    Ok(HttpResponse::Ok()
+        .content_type("text/event-stream")
+        .header("Cache-Control", "no-cache, no-store, must-revalidate")
+        .header("Pragma", "no-cache")
+        .header("Expires", "0")
+        .header("Connection", "keep-alive")
+        .streaming(response_stream))
 }
+
 // Адаптер для преобразования Stream в тип, который ожидает actix-web 3
 struct StreamAdapter<S>(S);
 

@@ -210,7 +210,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(Logger::default())
-            .wrap(middleware::Compress::default())
+            //.wrap(middleware::Compress::default())
             .wrap(
                 middleware::DefaultHeaders::new()
                     .header("X-XSS-Protection", "1; mode=block")
