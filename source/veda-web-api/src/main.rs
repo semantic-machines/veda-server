@@ -7,6 +7,7 @@ mod common;
 mod files;
 mod get;
 mod multifactor;
+mod nlp_augment_text;
 mod nlp_processing;
 mod query;
 mod update;
@@ -22,7 +23,8 @@ use crate::common::{db_connector, NLPServerConfig, UserContextCache, VQLClient, 
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
-use crate::nlp_processing::{augment_text, recognize_audio};
+use crate::nlp_augment_text::augment_text;
+use crate::nlp_processing::recognize_audio;
 use crate::query::{query_get, query_post, stored_query, QueryEndpoints};
 use crate::update::{add_to_individual, put_individual, put_individuals, remove_from_individual, remove_individual, set_in_individual};
 use crate::user_activity::user_activity_manager;
@@ -32,9 +34,9 @@ use crate::webdav::{
     handle_webdav_propfind_3, handle_webdav_proppatch, handle_webdav_put, handle_webdav_unlock,
 };
 use actix_files::{Files, NamedFile};
-use actix_web::http::Method;
+use actix_web::http::{ContentEncoding, Method};
 use actix_web::middleware::normalize::TrailingSlash;
-use actix_web::middleware::{Logger, NormalizePath};
+use actix_web::middleware::{Compress, Logger, NormalizePath};
 use actix_web::rt::System;
 use actix_web::{get, guard, head, middleware, web, App, HttpResponse, HttpServer};
 use futures::channel::mpsc;
@@ -115,6 +117,7 @@ async fn main() -> std::io::Result<()> {
     let mut ext_usr_http_port = None;
     let mut are_external_users = false;
     let mut use_direct_ft_query = false;
+    let mut enable_compression = true;
     let mut workers = num_cpus::get();
 
     let args: Vec<String> = env::args().collect();
@@ -124,6 +127,9 @@ async fn main() -> std::io::Result<()> {
         }
         if el.starts_with("--use-direct-ft-query") {
             use_direct_ft_query = el.split('=').collect::<Vec<&str>>()[1].to_owned().trim() == "true";
+        }
+        if el.starts_with("--enable-compression") {
+            enable_compression = el.split('=').collect::<Vec<&str>>()[1].to_owned().trim() == "true";
         }
         if el.starts_with("--workers") {
             workers = el.split('=').collect::<Vec<&str>>()[1].to_owned().trim().to_owned().parse::<usize>().unwrap();
@@ -208,9 +214,15 @@ async fn main() -> std::io::Result<()> {
         let m_lock = Method::from_bytes(b"LOCK").unwrap();
         let m_unlock = Method::from_bytes(b"UNLOCK").unwrap();
 
+        let compress_param = if enable_compression {
+            ContentEncoding::Auto
+        } else {
+            ContentEncoding::Identity
+        };
+
         App::new()
             .wrap(Logger::default())
-            //.wrap(middleware::Compress::default())
+            .wrap(Compress::new(compress_param))
             .wrap(
                 middleware::DefaultHeaders::new()
                     .header("X-XSS-Protection", "1; mode=block")
