@@ -173,7 +173,7 @@ async fn stored_query_impl(
             match source.as_str() {
                 "clickhouse" => {
                     if let Ok(sql) = parse_sql_query_arguments(&query_string, &mut params, &source) {
-                        info!("{sql}");
+                        //info!("{sql}");
                         let res = query_endpoints.ch_client.lock().await.query_select_async(&uinf.user_id, &sql, result_format, authorization_level, &az).await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
                         return Ok(HttpResponse::Ok().json(res));
