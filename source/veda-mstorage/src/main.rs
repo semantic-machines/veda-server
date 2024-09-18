@@ -114,9 +114,6 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-    // log that the server has started listening to the main_module_url
-    info!("started listening {}", main_module_url);
-
     // create a new HashMap for tickets cache
     let tickets_cache: HashMap<String, Ticket> = HashMap::new();
 
@@ -151,6 +148,9 @@ fn main() -> std::io::Result<()> {
         tickets_cache,
         az,
     };
+
+    // log that the server has started listening to the main_module_url
+    info!("started listening {}", main_module_url);
 
     // main loop
     loop {
@@ -196,6 +196,7 @@ fn main() -> std::io::Result<()> {
             }
         }
     }
+
 }
 
 // Define a struct Response

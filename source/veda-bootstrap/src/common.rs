@@ -120,42 +120,55 @@ pub async fn send_msg_to_tg(tg: &Option<TelegramDest>, text: &str) {
 pub async fn start_module(module: &mut VedaModule) -> io::Result<Child> {
     let datetime: DateTime<Local> = Local::now();
 
+    // Создаем директорию для логов, если она не существует
     fs::create_dir_all("./logs").unwrap_or_default();
 
-    let log_path = "./logs/veda-".to_owned() + &module.alias_name + "-" + &datetime.format("%Y-%m-%d %H:%M:%S.%f").to_string() + ".log";
-    let std_log_file = File::create(&log_path);
-    let err_log_file = File::create(log_path);
+    // Формируем путь для лог-файла
+    let log_path = format!("./logs/veda-{}-{}.log", module.alias_name, datetime.format("%Y-%m-%d %H:%M:%S.%f"));
 
-    let mut args = module.args.clone();
-    args.push(format!("--module-name={}", module.alias_name));
+    // Создаем один файл для логирования stdout и stderr
+    let log_file = File::create(&log_path)?;
 
-    let child = Command::new(&module.exec_name).stdout(std_log_file.unwrap()).stderr(err_log_file.unwrap()).args(&args).spawn();
+    // Клонируем файл, чтобы записывать в него и stdout, и stderr
+    let child = Command::new(&module.exec_name)
+        .stdout(log_file.try_clone()?)  // Используем клон для stdout
+        .stderr(log_file)               // Используем тот же файл для stderr
+        .args(&module.args)
+        .spawn();
 
     match child {
         Ok(p) => {
+            // Логирование успешного запуска
             info!("START *** {}", module.alias_name);
             info!("module exec path = {}", module.exec_name);
 
+            // Логирование аргументов, если они есть
             if !&module.args.is_empty() {
                 info!("args = {:?}", &module.args);
             }
 
+            // Логирование ограничения памяти, если оно указано
             if let Some(v) = &module.memory_limit {
                 info!("memory-limit = {} Kb", v);
             }
 
+            // Логирование watchdog timeout, если указан
             if let Some(v) = &module.watchdog_timeout {
                 info!("watchdog_timeout = {} s", v);
             }
 
+            // Записываем PID процесса в файл
             if let Ok(mut file) = File::create(".pids/__".to_owned() + &module.alias_name + "-pid") {
                 if let Err(e) = file.write_all(format!("{}", p.id()).as_bytes()) {
                     error!("failed to create pid file, module = {}, process = {}, err = {:?}", &module.alias_name, p.id(), e);
                 }
             }
+
+            // Дополнительная задержка для модуля "mstorage"
             if module.alias_name == "mstorage" {
                 thread::sleep(time::Duration::from_millis(100));
             }
+
             module.prev_err = None;
             Ok(p)
         },
