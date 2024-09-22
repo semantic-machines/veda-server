@@ -51,7 +51,9 @@ fn main() -> Result<(), i32> {
         acl_cache: ACLCache::new(&config),
     };
 
+    info!("@1");
     ctx.storage.put("test", "test");
+    info!("@2");
 
     if ctx.storage.get::<String>("Pcfg:VedaSystem").is_none() {
         info!("create permission for system account");
@@ -64,6 +66,8 @@ fn main() -> Result<(), i32> {
 
         prepare_permission_statement(&mut Individual::default(), &mut sys_permission, &mut ctx);
     }
+    info!("@3");
+
 
     let mut queue_consumer = Consumer::new("./data/queue", "az-indexer", "individuals-flow").expect("!!!!!!!!! FAIL QUEUE");
 
