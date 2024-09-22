@@ -35,11 +35,6 @@ fn main() -> Result<(), i32> {
     let config = Ini::load_from_str(&config_str).expect("Failed to parse config file");
 
     let mut module = Module::default();
-    let mut backend = Backend::create(StorageMode::ReadOnly, false);
-    while !backend.mstorage_api.connect() {
-        info!("waiting for start of main module...");
-        thread::sleep(std::time::Duration::from_millis(100));
-    }
 
     let module_info = ModuleInfo::new("./data", "acl_preparer", true);
     if module_info.is_err() {
@@ -77,6 +72,12 @@ fn main() -> Result<(), i32> {
     }
 
     info!("use index format version {}", ctx.version_of_index_format);
+
+    let mut backend = Backend::create(StorageMode::ReadOnly, false);
+    while !backend.mstorage_api.connect() {
+        info!("waiting for start of main module...");
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     module.listen_queue(
         &mut queue_consumer,

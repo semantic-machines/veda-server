@@ -1,6 +1,6 @@
 [package]
 name = "veda-az-indexer"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["itiu <ValeriyBushenev@gmail.com>"]
 edition = "2021"
 
