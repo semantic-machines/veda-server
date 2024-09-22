@@ -51,6 +51,8 @@ fn main() -> Result<(), i32> {
         acl_cache: ACLCache::new(&config),
     };
 
+    ctx.storage.put("test", "test");
+
     if ctx.storage.get::<String>("Pcfg:VedaSystem").is_none() {
         info!("create permission for system account");
         let mut sys_permission = Individual::default();
