@@ -105,15 +105,6 @@ fn main() -> std::io::Result<()> {
     // unwrap the main_module_url property
     let main_module_url = main_module_url.unwrap();
 
-    // create a new socket for replication
-    let server = Socket::new(Protocol::Rep0)?;
-
-    // try to listen to the main_module_url, log error if failed
-    if let Err(e) = server.listen(&main_module_url) {
-        error!("failed to listen, err = {:?}", e);
-        return Ok(());
-    }
-
     // create a new HashMap for tickets cache
     let tickets_cache: HashMap<String, Ticket> = HashMap::new();
 
@@ -151,6 +142,14 @@ fn main() -> std::io::Result<()> {
 
     // log that the server has started listening to the main_module_url
     info!("started listening {}", main_module_url);
+    // create a new socket for replication
+    let server = Socket::new(Protocol::Rep0)?;
+
+    // try to listen to the main_module_url, log error if failed
+    if let Err(e) = server.listen(&main_module_url) {
+        error!("failed to listen, err = {:?}", e);
+        return Ok(());
+    }
 
     // main loop
     loop {

@@ -1,9 +1,12 @@
 #!/bin/bash
+echo 'Запуск скрипта установки для source-server'
+
 # скрипт устанавливает среду для последующей компиляции, берет исходники зависимостей из github, но не собирает
 
 #./tools/install-repo-libs.sh
 
 INSTALL_PATH=$PWD
+echo $INSTALL_PATH
 
 # Get other dependencies
 #LIB_NAME[5]="libglib2.0-dev"
@@ -53,6 +56,8 @@ else
     echo "--- UPDATE RUST ---"
     rustup update stable
 fi
+
+rustup default 1.75
 
 whereis rustc
 rustc -V

@@ -77,5 +77,5 @@ tokio = "0.2.25"
 toml = "0.5.11"
 futures-util = "0.3.30"
 bytes = "0.5.6"
-v_common = { package = "v-common", version = "=0.10.15" }
+v_common = { package = "v-common", version = "=0.10.16" }
 #v_common = { package = "v-common", path = "../../../v-common" }
