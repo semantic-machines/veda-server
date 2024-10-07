@@ -1,12 +1,38 @@
 use crate::acl_cache::ACLCache;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record, update_counters};
 use v_common::module::info::ModuleInfo;
 use v_common::onto::individual::Individual;
 use v_common::storage::lmdb_storage::LmdbInstance;
 use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE, PERMISSION_PREFIX};
 use v_common::v_authorization::{ACLRecord, ACLRecordSet};
+
+// Определяем пользовательский тип ошибки
+#[derive(Debug)]
+pub enum StorageError {
+    StoragePutError {
+        key: String,
+        source: String,
+    },
+}
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StorageError::StoragePutError {
+                key,
+                source,
+            } => {
+                write!(f, "Failed to put key '{}' into {}.", key, source)
+            },
+        }
+    }
+}
+
+impl Error for StorageError {}
 
 // Structure for storing access rights data
 struct RightData<'a> {
@@ -77,13 +103,22 @@ fn get_access_from_individual(state: &mut Individual) -> u8 {
 // - Extracts information about resources, groups, and access rights from the previous and new object states.
 // - Determines if the object is deleted, restored, or updated.
 // - Calls the add_or_del_right_sets() function to add or remove access right sets.
-pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual, prd_rsc: &str, prd_in_set: &str, prefix: &str, default_access: u8, ctx: &mut Context) {
+
+pub fn index_right_sets(
+    prev_state: &mut Individual,
+    new_state: &mut Individual,
+    prd_rsc: &str,
+    prd_in_set: &str,
+    prefix: &str,
+    default_access: u8,
+    ctx: &mut Context,
+) -> Result<(), StorageError> {
     let mut is_drop_count = false;
 
     if let Some(b) = new_state.get_first_bool("v-s:dropCount") {
         if new_state.get_first_integer("v-s:updateCounter").unwrap_or(0) > 1 {
             warn!("detected v-s:updateCounter > 1 with v-s:dropCount, skip indexing {}", new_state.get_id());
-            return;
+            return Ok(());
         }
 
         is_drop_count = b;
@@ -145,11 +180,11 @@ pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual,
 
     if n_is_del && !p_is_del {
         // Object is deleted
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut HashMap::new(), &CacheType::None);
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut HashMap::new(), &CacheType::None)?;
     } else if !n_is_del && p_is_del {
         // Object is restored
         let mut cache = HashMap::new();
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read);
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read)?;
     } else if !n_is_del && !p_is_del {
         // Object is updated
         let mut cache = HashMap::new();
@@ -160,11 +195,13 @@ pub fn index_right_sets(prev_state: &mut Individual, new_state: &mut Individual,
                 access: p_acs,
             };
 
-            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache, &CacheType::None);
+            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache, &CacheType::None)?;
         }
 
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read);
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read)?;
     }
+
+    Ok(())
 }
 
 // Enumeration for caching mode
@@ -185,7 +222,7 @@ fn add_or_del_right_sets(
     ctx: &mut Context,
     cache: &mut HashMap<String, String>,
     mode: &CacheType,
-) {
+) -> Result<(), StorageError> {
     // Get the resources and groups that have been removed
     let removed_resource = get_disappeared(prev_data.resource, new_data.resource);
     let removed_in_set = get_disappeared(prev_data.in_set, new_data.in_set);
@@ -199,10 +236,10 @@ fn add_or_del_right_sets(
             access: new_data.access,
         };
 
-        update_right_set(id, &t_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode)?;
     } else {
         // Update the access right set with the new data
-        update_right_set(id, new_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, new_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode)?;
     }
 
     if !removed_resource.is_empty() {
@@ -212,7 +249,7 @@ fn add_or_del_right_sets(
             in_set: new_data.in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode)?;
     }
 
     if !removed_in_set.is_empty() {
@@ -222,8 +259,10 @@ fn add_or_del_right_sets(
             in_set: &removed_in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode);
+        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode)?;
     }
+
+    Ok(())
 }
 
 // Function for updating an access right set
@@ -240,7 +279,7 @@ fn update_right_set(
     ctx: &mut Context,
     cache: &mut HashMap<String, String>,
     mode: &CacheType,
-) {
+) -> Result<(), StorageError> {
     for rs in new_data.resource.iter() {
         // Generate the key based on the prefix, filter, and resource identifier
         let key = aux_data.prefix.to_owned() + aux_data.use_filter + rs;
@@ -302,23 +341,35 @@ fn update_right_set(
             cache.insert(key, new_record);
         } else {
             debug!("NEW(STORAGE): {} {} {:?}", source_id, rs, new_record);
-            ctx.storage.put(&key, new_record);
+            
+            if !ctx.storage.put(&key, new_record) {
+                return Err(StorageError::StoragePutError {
+                    key: key.clone(),
+                    source: "storage".to_string(),
+                });
+            }
 
             if let Some(c) = &mut ctx.acl_cache {
                 let new_record = encode_record(Some(Utc::now()), &new_right_set, ctx.version_of_index_format);
                 debug!("NEW(CACHE): {} {} {:?}", source_id, rs, new_record);
-                c.instance.put(&key, new_record);
+                
+                if !c.instance.put(&key, new_record) {
+                    return Err(StorageError::StoragePutError {
+                        key: key.clone(),
+                        source: "acl_cache".to_string(),
+                    });
+                }
             }
         }
     }
+    Ok(())
 }
 
 // Function to get the elements that are in array a but not in array b
 pub fn get_disappeared(a: &[String], b: &[String]) -> Vec<String> {
-    let delta = Vec::new(); // TODO: Fix it
+    let mut delta = Vec::new();
 
     for r_a in a.iter() {
-        let mut delta = Vec::new();
         let mut is_found = false;
         for r_b in b.iter() {
             if r_a == r_b {
@@ -328,7 +379,7 @@ pub fn get_disappeared(a: &[String], b: &[String]) -> Vec<String> {
         }
 
         if !is_found {
-            delta.push(r_a);
+            delta.push(r_a.clone());
         }
     }
 
@@ -338,6 +389,6 @@ pub fn get_disappeared(a: &[String], b: &[String]) -> Vec<String> {
     delta
 }
 
-pub fn prepare_permission_statement(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
-    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx);
+pub fn prepare_permission_statement(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) -> Result<(), StorageError> {
+    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx)
 }

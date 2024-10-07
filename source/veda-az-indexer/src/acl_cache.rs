@@ -89,9 +89,8 @@ pub fn clean_cache(ctx: &mut Context) -> Result<(), PrepareError> {
         if !cache_ctx.cleanup_in_progress {
             let should_start_cleanup = match cache_ctx.last_cleanup_date {
                 Some(last_cleanup) => {
-                    now.date_naive() > last_cleanup.date_naive() &&
-                        (current_time >= cache_ctx.cleanup_time ||
-                            now.date_naive() > last_cleanup.date_naive().succ_opt().unwrap_or(last_cleanup.date_naive()))
+                    now.date_naive() > last_cleanup.date_naive()
+                        && (current_time >= cache_ctx.cleanup_time || now.date_naive() > last_cleanup.date_naive().succ_opt().unwrap_or(last_cleanup.date_naive()))
                 },
                 None => true, // If we've never run a cleanup, start it immediately
             };

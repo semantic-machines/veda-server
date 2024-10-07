@@ -60,10 +60,10 @@ fn main() -> Result<(), i32> {
         sys_permission.add_uri("v-s:permissionSubject", "cfg:VedaSystem");
         sys_permission.add_uri("v-s:permissionObject", "v-s:AllResourcesGroup");
 
-        prepare_permission_statement(&mut Individual::default(), &mut sys_permission, &mut ctx);
+        if let Err(e) = prepare_permission_statement(&mut Individual::default(), &mut sys_permission, &mut ctx) {
+            error!("Failed to prepare permission statement for system account: {:?}", e);
+        }
     }
-    info!("@3");
-
 
     let mut queue_consumer = Consumer::new("./data/queue", "az-indexer", "individuals-flow").expect("!!!!!!!!! FAIL QUEUE");
 
@@ -131,13 +131,19 @@ fn prepare(_module: &mut Backend, ctx: &mut Context, queue_element: &mut Individ
     get_inner_binobj_as_individual(queue_element, "new_state", &mut new_state);
 
     if new_state.any_exists("rdf:type", &["v-s:PermissionStatement"]) || prev_state.any_exists("rdf:type", &["v-s:PermissionStatement"]) {
-        prepare_permission_statement(&mut prev_state, &mut new_state, ctx);
+        if let Err(e) = prepare_permission_statement(&mut prev_state, &mut new_state, ctx) {
+            error!("Failed to prepare permission statement: {:?}", e);
+        }
         ctx.permission_statement_counter += 1;
     } else if new_state.any_exists("rdf:type", &["v-s:Membership"]) || prev_state.any_exists("rdf:type", &["v-s:Membership"]) {
-        prepare_membership(&mut prev_state, &mut new_state, ctx);
+        if let Err(e) = prepare_membership(&mut prev_state, &mut new_state, ctx) {
+            error!("Failed to prepare membership: {:?}", e);
+        }
         ctx.membership_counter += 1;
     } else if new_state.any_exists("rdf:type", &["v-s:PermissionFilter"]) || prev_state.any_exists("rdf:type", &["v-s:PermissionFilter"]) {
-        prepare_permission_filter(&mut prev_state, &mut new_state, ctx);
+        if let Err(e) = prepare_permission_filter(&mut prev_state, &mut new_state, ctx) {
+            error!("Failed to prepare permission filter: {:?}", e);
+        }
     } else if new_state.any_exists("rdf:type", &["v-s:Account"]) || prev_state.any_exists("rdf:type", &["v-s:Account"]) {
         prepare_account(&mut prev_state, &mut new_state, ctx);
     }
@@ -150,7 +156,7 @@ fn prepare(_module: &mut Backend, ctx: &mut Context, queue_element: &mut Individ
     Ok(true)
 }
 
-fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
+fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) -> Result<(), StorageError> {
     index_right_sets(
         prev_state,
         new_state,
@@ -159,11 +165,11 @@ fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, c
         MEMBERSHIP_PREFIX,
         Access::CanCreate as u8 | Access::CanRead as u8 | Access::CanUpdate as u8 | Access::CanDelete as u8,
         ctx,
-    );
+    )
 }
 
-fn prepare_permission_filter(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
-    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx);
+fn prepare_permission_filter(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) -> Result<(), StorageError> {
+    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx)
 }
 
 fn prepare_account(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
