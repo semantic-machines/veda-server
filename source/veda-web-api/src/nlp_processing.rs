@@ -12,11 +12,16 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
+use async_std::fs::File;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
+use wav::{BitDepth, Header};
+use ogg_opus;  // Добавьте эту библиотеку для декодирования Opus
+use std::error::Error;
+use std::fs::File as StdFile;
+use std::io::{Cursor, BufWriter};
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
@@ -57,58 +62,76 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     Err(actix_web::error::ErrorBadRequest("Could not save file"))
 }
 
-async fn convert_audio(input_path: &str, output_path: &str) -> Result<(), actix_web::Error> {
-    info!("Starting audio conversion from {} to {}", input_path, output_path);
 
-    let status = Command::new("ffmpeg")
-        .arg("-y") // Добавим -y для автоматического подтверждения перезаписи файла
-        .arg("-i")
-        .arg(input_path)
-        .arg("-ar")
-        .arg("16000")
-        .arg("-ac")
-        .arg("1")
-        .arg(output_path)
-        .status()
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to start ffmpeg: {}", e)))?;
+use async_std::prelude::*;
 
-    if !status.success() {
-        return Err(actix_web::error::ErrorInternalServerError(format!("ffmpeg failed with status: {}", status)));
-    }
+// Декодирование Opus и запись в файл WAV асинхронно
+async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    // Открываем Ogg Opus файл асинхронно
+    let mut f = File::open(input_path).await?;
 
-    info!("Audio conversion completed successfully");
+    // Читаем весь файл в буфер
+    let mut buffer = Vec::new();
+    f.read_to_end(&mut buffer).await?;
+
+    // Декодируем аудио в PCM (i16)
+    let (raw, _header) = ogg_opus::decode::<_, 16000>(Cursor::new(buffer))?;
+
+    // Создаем WAV файл с заголовком
+    let header = Header {
+        audio_format: 1,      // PCM
+        channel_count: 1,     // Моноканал
+        sampling_rate: 16000, // Частота дискретизации 16kHz
+        bytes_per_second: 16000 * 2, // Скорость передачи данных (частота дискретизации * байты на сэмпл)
+        bytes_per_sample: 2,  // Размер блока (2 байта на сэмпл)
+        bits_per_sample: 16,  // 16 бит на сэмпл
+    };
+
+    // Открываем выходной файл синхронно для записи WAV
+    let output_file = StdFile::create(output_path)?; // Используем синхронное открытие файла
+    let mut writer = BufWriter::new(output_file); // Используем стандартный BufWriter
+
+    // Записываем декодированные данные в WAV файл
+    wav::write(header, &BitDepth::Sixteen(raw), &mut writer)?; // Записываем WAV
 
     Ok(())
 }
 
-fn clean_text(text: &str, phrases: &[String]) -> String {
-    let mut cleaned_text = text.to_string();
-    for phrase in phrases {
-        let re = RegexBuilder::new(&regex::escape(phrase)).case_insensitive(true).build().unwrap();
-        cleaned_text = re.replace_all(&cleaned_text, "").to_string();
-    }
-    cleaned_text.trim().to_string()
-}
 
+// Функция транскрипции с использованием WAV файла
 async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
     let client = reqwest::Client::new();
 
-    // Convert audio to WAV 16kHz
+    // Декодирование Opus в WAV файл
     let output_path = filepath.replace(".ogg", "_converted.wav");
-    convert_audio(&filepath, &output_path).await?;
+    decode_opus_to_wav(&filepath, &output_path)
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Audio decoding failed: {}", e)))?;
 
-    let file_content = fs::read(&output_path).await.map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read converted file: {}", e)))?;
+    // Чтение содержимого WAV файла
+    let file_content = fs::read(&output_path)
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read converted file: {}", e)))?;
 
-    let file_name = Path::new(&output_path).file_name().and_then(|name| name.to_str()).unwrap_or("audio.wav");
+    // Генерация имени файла
+    let file_name = Path::new(&output_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("audio.wav");
 
+    // Подготовка файла для отправки на сервер
     let part = reqwest::multipart::Part::bytes(file_content)
         .file_name(file_name.to_string())
         .mime_str("audio/wav")
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e)))?;
 
-    let form = reqwest::multipart::Form::new().part("file", part).text("temperature", "0.0").text("temperature_inc", "0.2").text("response_format", "json");
+    let form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("temperature", "0.0")
+        .text("temperature_inc", "0.2")
+        .text("response_format", "json");
 
+    // Отправка файла на сервер Whisper для транскрипции
     let response = client
         .post(&format!("{}/inference", nlp_config.whisper_server_url))
         .multipart(form)
@@ -128,25 +151,23 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
 
     let json: Value = serde_json::from_str(&response_text).map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to parse JSON response: {}", e)))?;
 
-    let transcription = json["text"].as_str().ok_or_else(|| actix_web::error::ErrorInternalServerError("Missing 'text' field in response"))?.to_string();
+    let transcription = json["text"]
+        .as_str()
+        .ok_or_else(|| actix_web::error::ErrorInternalServerError("Missing 'text' field in response"))?
+        .to_string();
 
-    // Clean up temporary files
-    fs::remove_file(&filepath).await.map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e)))?;
-    fs::remove_file(&output_path).await.map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e)))?;
-
-    // Загрузка фраз для удаления
-    let phrases_text = fs::read_to_string("./nlp_phrases_to_remove.toml")
+    // Удаление временных файлов
+    fs::remove_file(&filepath)
         .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read nlp_phrases_to_remove.toml: {}", e)))?;
-    let phrases_to_remove: PhrasesToRemove =
-        toml::from_str(&phrases_text).map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to parse nlp_phrases_to_remove.toml: {}", e)))?;
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e)))?;
+    fs::remove_file(&output_path)
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e)))?;
 
-    // Очистка транскрипции
-    let cleaned_transcription = clean_text(&transcription, &phrases_to_remove.phrases);
-
-    Ok(cleaned_transcription)
+    Ok(transcription)
 }
 
+// Основной обработчик Actix Web
 pub async fn recognize_audio(
     params: web::Query<TicketRequest>,
     ticket_cache: web::Data<UserContextCache>,
@@ -172,4 +193,17 @@ pub async fn recognize_audio(
     log(Some(&start_time), &uinf, "recognize_audio", "success", ResultCode::Ok);
 
     Ok(HttpResponse::Ok().content_type("text/plain").body(transcription))
+}
+
+// Функция для очистки текста
+fn clean_text(text: &str, phrases: &[String]) -> String {
+    let mut cleaned_text = text.to_string();
+    for phrase in phrases {
+        let re = RegexBuilder::new(&regex::escape(phrase))
+            .case_insensitive(true)
+            .build()
+            .unwrap();
+        cleaned_text = re.replace_all(&cleaned_text, "").to_string();
+    }
+    cleaned_text.trim().to_string()
 }
