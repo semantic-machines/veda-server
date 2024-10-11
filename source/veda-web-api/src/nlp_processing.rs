@@ -67,17 +67,14 @@ use async_std::prelude::*;
 
 // Декодирование Opus и запись в файл WAV асинхронно
 async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    // Открываем Ogg Opus файл асинхронно
-    let mut f = File::open(input_path).await?;
+    info!("Starting to decode Opus file: {} to WAV format", input_path);
 
-    // Читаем весь файл в буфер
+    let mut f = File::open(input_path).await?;
     let mut buffer = Vec::new();
     f.read_to_end(&mut buffer).await?;
 
-    // Декодируем аудио в PCM (i16)
     let (raw, _header) = ogg_opus::decode::<_, 16000>(Cursor::new(buffer))?;
 
-    // Создаем WAV файл с заголовком
     let header = Header {
         audio_format: 1,      // PCM
         channel_count: 1,     // Моноканал
@@ -87,12 +84,11 @@ async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), B
         bits_per_sample: 16,  // 16 бит на сэмпл
     };
 
-    // Открываем выходной файл синхронно для записи WAV
-    let output_file = StdFile::create(output_path)?; // Используем синхронное открытие файла
-    let mut writer = BufWriter::new(output_file); // Используем стандартный BufWriter
+    let output_file = StdFile::create(output_path)?;
+    let mut writer = BufWriter::new(output_file);
 
-    // Записываем декодированные данные в WAV файл
-    wav::write(header, &BitDepth::Sixteen(raw), &mut writer)?; // Записываем WAV
+    wav::write(header, &BitDepth::Sixteen(raw), &mut writer)?;
+    info!("Opus file successfully decoded to WAV at path: {}", output_path);
 
     Ok(())
 }
@@ -100,30 +96,33 @@ async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), B
 
 // Функция транскрипции с использованием WAV файла
 async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
-    let client = reqwest::Client::new();
+    info!("Starting transcription for file: {}", filepath);
 
-    // Декодирование Opus в WAV файл
     let output_path = filepath.replace(".ogg", "_converted.wav");
-    decode_opus_to_wav(&filepath, &output_path)
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Audio decoding failed: {}", e)))?;
+    decode_opus_to_wav(&filepath, &output_path).await.map_err(|e| {
+        info!("Failed to decode audio: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Audio decoding failed: {}", e))
+    })?;
 
-    // Чтение содержимого WAV файла
-    let file_content = fs::read(&output_path)
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read converted file: {}", e)))?;
+    let file_content = fs::read(&output_path).await.map_err(|e| {
+        info!("Failed to read converted file: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to read converted file: {}", e))
+    })?;
 
-    // Генерация имени файла
     let file_name = Path::new(&output_path)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("audio.wav");
 
-    // Подготовка файла для отправки на сервер
+    info!("Sending file {} to Whisper.cpp for transcription", file_name);
+
     let part = reqwest::multipart::Part::bytes(file_content)
         .file_name(file_name.to_string())
         .mime_str("audio/wav")
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e)))?;
+        .map_err(|e| {
+            info!("Failed to create multipart: {}", e);
+            actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e))
+        })?;
 
     let form = reqwest::multipart::Form::new()
         .part("file", part)
@@ -131,15 +130,18 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
         .text("temperature_inc", "0.2")
         .text("response_format", "json");
 
-    // Отправка файла на сервер Whisper для транскрипции
-    let response = client
+    let response = reqwest::Client::new()
         .post(&format!("{}/inference", nlp_config.whisper_server_url))
         .multipart(form)
         .send()
         .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Whisper.cpp server error: {}", e)))?;
+        .map_err(|e| {
+            info!("Whisper.cpp server error: {}", e);
+            actix_web::error::ErrorInternalServerError(format!("Whisper.cpp server error: {}", e))
+        })?;
 
     if !response.status().is_success() {
+        info!("Whisper.cpp server returned error: {}", response.status());
         return Err(actix_web::error::ErrorInternalServerError(format!(
             "Whisper.cpp server returned error status: {} {}",
             response.status(),
@@ -147,22 +149,31 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
         )));
     }
 
-    let response_text = response.text().await.map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read Whisper.cpp response: {}", e)))?;
+    let response_text = response.text().await.map_err(|e| {
+        info!("Failed to read Whisper.cpp response: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to read Whisper.cpp response: {}", e))
+    })?;
 
-    let json: Value = serde_json::from_str(&response_text).map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to parse JSON response: {}", e)))?;
+    let json: Value = serde_json::from_str(&response_text).map_err(|e| {
+        info!("Failed to parse JSON response: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to parse JSON response: {}", e))
+    })?;
 
     let transcription = json["text"]
         .as_str()
         .ok_or_else(|| actix_web::error::ErrorInternalServerError("Missing 'text' field in response"))?
         .to_string();
 
-    // Удаление временных файлов
-    fs::remove_file(&filepath)
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e)))?;
-    fs::remove_file(&output_path)
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e)))?;
+    info!("Transcription successful for file: {}", filepath);
+
+    fs::remove_file(&filepath).await.map_err(|e| {
+        info!("Failed to remove original file: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e))
+    })?;
+    fs::remove_file(&output_path).await.map_err(|e| {
+        info!("Failed to remove converted file: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e))
+    })?;
 
     Ok(transcription)
 }
