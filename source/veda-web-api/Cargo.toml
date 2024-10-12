@@ -1,6 +1,6 @@
 [package]
 name = "veda-web-api"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [dependencies]
@@ -68,10 +68,6 @@ strum_macros = "0.26"
 version = "3.0.0"
 git-version = "0.3.9"
 
-#symphonia = { version = "0.5.4", features = ["default", "ogg", "vorbis"] }
-
-hound = "3.5"
-
 #v_common = { package = "v-common", version = "=0.10.9" }
 tokio = "0.2.25"
 toml = "0.5.11"
@@ -79,3 +75,8 @@ futures-util = "0.3.30"
 bytes = "0.5.6"
 v_common = { package = "v-common", version = "=0.10.16" }
 #v_common = { package = "v-common", path = "../../../v-common" }
+
+rubato = "0.16.0"
+hound = "3.4.0"
+opus = "0.3.0"
+ogg = "0.7"

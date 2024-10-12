@@ -7,23 +7,27 @@ use chrono::Utc;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::{StreamExt, TryStreamExt};
+use hound::{SampleFormat, WavSpec, WavWriter};
+use ogg::reading::PacketReader;
+use opus::Decoder;
 use regex::RegexBuilder;
+use rubato::{FftFixedInOut, Resampler};
 use serde::Deserialize;
 use serde_json::Value;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 use std::time::Instant;
-use async_std::fs::File;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
-use wav::{BitDepth, Header};
-use ogg_opus;  // Добавьте эту библиотеку для декодирования Opus
-use std::error::Error;
-use std::fs::File as StdFile;
-use std::io::{Cursor, BufWriter};
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+const INPUT_SAMPLE_RATE: usize = 48000; // Частота дискретизации Opus
+const OUTPUT_SAMPLE_RATE: usize = 16000; // Целевая частота дискретизации
+const CHANNELS: usize = 2; // Стерео
 
 #[derive(Deserialize)]
 struct PhrasesToRemove {
@@ -62,37 +66,76 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     Err(actix_web::error::ErrorBadRequest("Could not save file"))
 }
 
-
-use async_std::prelude::*;
-
-// Декодирование Opus и запись в файл WAV асинхронно
+// Декодирование Opus и пересемплирование до 16 кГц, запись в моно WAV
 async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    info!("Starting to decode Opus file: {} to WAV format", input_path);
+    // Открываем входной файл Ogg Opus
+    let input_file = File::open(input_path)?;
+    let reader = BufReader::new(input_file);
 
-    let mut f = File::open(input_path).await?;
-    let mut buffer = Vec::new();
-    f.read_to_end(&mut buffer).await?;
+    // Инициализируем Ogg PacketReader
+    let mut packet_reader = PacketReader::new(reader);
 
-    let (raw, _header) = ogg_opus::decode::<_, 16000>(Cursor::new(buffer))?;
+    // Инициализируем Opus-декодер
+    let mut decoder = Decoder::new(INPUT_SAMPLE_RATE as u32, opus::Channels::Stereo).expect("Failed to create Opus decoder");
 
-    let header = Header {
-        audio_format: 1,      // PCM
-        channel_count: 1,     // Моноканал
-        sampling_rate: 16000, // Частота дискретизации 16kHz
-        bytes_per_second: 16000 * 2, // Скорость передачи данных (частота дискретизации * байты на сэмпл)
-        bytes_per_sample: 2,  // Размер блока (2 байта на сэмпл)
-        bits_per_sample: 16,  // 16 бит на сэмпл
+    // Открываем выходной файл для записи в формате WAV
+    let output_file = File::create(output_path)?;
+    let writer = BufWriter::new(output_file);
+
+    // Указываем спецификации WAV файла (целевые параметры: 16 кГц, моно)
+    let spec = WavSpec {
+        channels: 1, // Указываем моно (1 канал)
+        sample_rate: OUTPUT_SAMPLE_RATE as u32,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
     };
 
-    let output_file = StdFile::create(output_path)?;
-    let mut writer = BufWriter::new(output_file);
+    // Создаем WAV writer с выбранными спецификациями
+    let mut wav_writer = WavWriter::new(writer, spec).unwrap();
 
-    wav::write(header, &BitDepth::Sixteen(raw), &mut writer)?;
-    info!("Opus file successfully decoded to WAV at path: {}", output_path);
+    // Инициализируем ресемплер для изменения частоты с 48 кГц на 16 кГц
+    let mut resampler = FftFixedInOut::new(INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE, 960, CHANNELS).unwrap();
+
+    // Буфер для декодированных PCM данных
+    let mut pcm_buffer = vec![0; 960 * CHANNELS];
+
+    // Читаем Ogg пакеты и передаем их в Opus-декодер
+    while let Ok(Some(packet)) = packet_reader.read_packet() {
+        // Пропускаем пакеты с неподходящим размером
+        if packet.data.len() < 1 || packet.data.len() > 1275 {
+            //eprintln!("Skipping invalid Opus packet with size {}", packet.data.len());
+            continue;
+        }
+
+        // Декодируем кадр Opus
+        match decoder.decode(&packet.data, &mut pcm_buffer, false) {
+            Ok(decoded_samples) => {
+                // Преобразуем декодированные PCM данные с i16 в f32 для ресемплирования
+                let input: Vec<Vec<f32>> =
+                    (0..CHANNELS).map(|channel| pcm_buffer.iter().skip(channel).step_by(CHANNELS).take(decoded_samples).map(|&s| s as f32 / 32768.0).collect()).collect();
+
+                // Ресемплируем данные
+                let resampled = resampler.process(&input, None).expect("Failed to resample");
+
+                // Преобразуем результат в моно, усредняя левый и правый каналы, затем в i16 и записываем в WAV
+                for frame in resampled[0].iter().zip(&resampled[1]) {
+                    let mono_sample = ((frame.0 + frame.1) / 2.0 * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                    wav_writer.write_sample(mono_sample).unwrap();
+                }
+            },
+            Err(e) => {
+                error!("Failed to decode Opus frame: {:?}", e);
+                continue; // Пропускаем этот пакет и продолжаем обработку следующих пакетов
+            },
+        }
+    }
+
+    wav_writer.finalize().unwrap();
+
+    info!("Decoding, resampling, and mono conversion completed successfully and saved as {}", output_path);
 
     Ok(())
 }
-
 
 // Функция транскрипции с использованием WAV файла
 async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
@@ -109,36 +152,21 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
         actix_web::error::ErrorInternalServerError(format!("Failed to read converted file: {}", e))
     })?;
 
-    let file_name = Path::new(&output_path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("audio.wav");
+    let file_name = Path::new(&output_path).file_name().and_then(|name| name.to_str()).unwrap_or("audio.wav");
 
     info!("Sending file {} to Whisper.cpp for transcription", file_name);
 
-    let part = reqwest::multipart::Part::bytes(file_content)
-        .file_name(file_name.to_string())
-        .mime_str("audio/wav")
-        .map_err(|e| {
-            info!("Failed to create multipart: {}", e);
-            actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e))
-        })?;
+    let part = reqwest::multipart::Part::bytes(file_content).file_name(file_name.to_string()).mime_str("audio/wav").map_err(|e| {
+        info!("Failed to create multipart: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e))
+    })?;
 
-    let form = reqwest::multipart::Form::new()
-        .part("file", part)
-        .text("temperature", "0.0")
-        .text("temperature_inc", "0.2")
-        .text("response_format", "json");
+    let form = reqwest::multipart::Form::new().part("file", part).text("temperature", "0.0").text("temperature_inc", "0.2").text("response_format", "json");
 
-    let response = reqwest::Client::new()
-        .post(&format!("{}/inference", nlp_config.whisper_server_url))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| {
-            info!("Whisper.cpp server error: {}", e);
-            actix_web::error::ErrorInternalServerError(format!("Whisper.cpp server error: {}", e))
-        })?;
+    let response = reqwest::Client::new().post(&format!("{}/inference", nlp_config.whisper_server_url)).multipart(form).send().await.map_err(|e| {
+        info!("Whisper.cpp server error: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Whisper.cpp server error: {}", e))
+    })?;
 
     if !response.status().is_success() {
         info!("Whisper.cpp server returned error: {}", response.status());
@@ -159,10 +187,7 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
         actix_web::error::ErrorInternalServerError(format!("Failed to parse JSON response: {}", e))
     })?;
 
-    let transcription = json["text"]
-        .as_str()
-        .ok_or_else(|| actix_web::error::ErrorInternalServerError("Missing 'text' field in response"))?
-        .to_string();
+    let transcription = json["text"].as_str().ok_or_else(|| actix_web::error::ErrorInternalServerError("Missing 'text' field in response"))?.to_string();
 
     info!("Transcription successful for file: {}", filepath);
 
@@ -175,7 +200,17 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
         actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e))
     })?;
 
-    Ok(transcription)
+    // Загрузка фраз для удаления
+    let phrases_text = fs::read_to_string("./nlp_phrases_to_remove.toml")
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read nlp_phrases_to_remove.toml: {}", e)))?;
+    let phrases_to_remove: PhrasesToRemove =
+        toml::from_str(&phrases_text).map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to parse nlp_phrases_to_remove.toml: {}", e)))?;
+
+    // Очистка транскрипции
+    let cleaned_transcription = clean_text(&transcription, &phrases_to_remove.phrases);
+
+    Ok(cleaned_transcription)
 }
 
 // Основной обработчик Actix Web
@@ -210,10 +245,7 @@ pub async fn recognize_audio(
 fn clean_text(text: &str, phrases: &[String]) -> String {
     let mut cleaned_text = text.to_string();
     for phrase in phrases {
-        let re = RegexBuilder::new(&regex::escape(phrase))
-            .case_insensitive(true)
-            .build()
-            .unwrap();
+        let re = RegexBuilder::new(&regex::escape(phrase)).case_insensitive(true).build().unwrap();
         cleaned_text = re.replace_all(&cleaned_text, "").to_string();
     }
     cleaned_text.trim().to_string()
