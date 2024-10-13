@@ -94,7 +94,7 @@ async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), B
     let mut wav_writer = WavWriter::new(writer, spec).unwrap();
 
     // Инициализируем ресемплер для изменения частоты с 48 кГц на 16 кГц
-    let mut resampler = FftFixedInOut::new(INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE, 960, CHANNELS).unwrap();
+    let mut resampler = FftFixedInOut::new(INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE, 960, 1).unwrap(); // 1 канал для моно
 
     // Буфер для декодированных PCM данных
     let mut pcm_buffer = vec![0; 960 * CHANNELS];
@@ -103,36 +103,42 @@ async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), B
     while let Ok(Some(packet)) = packet_reader.read_packet() {
         // Пропускаем пакеты с неподходящим размером
         if packet.data.len() < 1 || packet.data.len() > 1275 {
-            //eprintln!("Skipping invalid Opus packet with size {}", packet.data.len());
             continue;
         }
 
         // Декодируем кадр Opus
         match decoder.decode(&packet.data, &mut pcm_buffer, false) {
             Ok(decoded_samples) => {
-                // Преобразуем декодированные PCM данные с i16 в f32 для ресемплирования
-                let input: Vec<Vec<f32>> =
-                    (0..CHANNELS).map(|channel| pcm_buffer.iter().skip(channel).step_by(CHANNELS).take(decoded_samples).map(|&s| s as f32 / 32768.0).collect()).collect();
+                // Преобразуем декодированные PCM данные в моно, усредняя левый и правый каналы
+                let mono_input: Vec<f32> = pcm_buffer
+                    .chunks_exact(CHANNELS) // Разбиваем на стерео кадры
+                    .take(decoded_samples) // Берем только декодированные кадры
+                    .map(|frame| {
+                        let left = frame[0] as f32 / 32768.0;
+                        let right = frame[1] as f32 / 32768.0;
+                        (left + right) / 2.0 // Усредняем левый и правый каналы
+                    })
+                    .collect();
 
                 // Ресемплируем данные
-                let resampled = resampler.process(&input, None).expect("Failed to resample");
+                let resampled = resampler.process(&[mono_input], None).expect("Failed to resample");
 
-                // Преобразуем результат в моно, усредняя левый и правый каналы, затем в i16 и записываем в WAV
-                for frame in resampled[0].iter().zip(&resampled[1]) {
-                    let mono_sample = ((frame.0 + frame.1) / 2.0 * 32768.0).clamp(-32768.0, 32767.0) as i16;
-                    wav_writer.write_sample(mono_sample).unwrap();
+                // Преобразуем результат в i16 и записываем в WAV
+                for &sample in &resampled[0] {
+                    let output_sample = (sample * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                    wav_writer.write_sample(output_sample).unwrap();
                 }
             },
             Err(e) => {
                 error!("Failed to decode Opus frame: {:?}", e);
-                continue; // Пропускаем этот пакет и продолжаем обработку следующих пакетов
+                continue;
             },
         }
     }
 
     wav_writer.finalize().unwrap();
 
-    info!("Decoding, resampling, and mono conversion completed successfully and saved as {}", output_path);
+    info!("Decoding, mono conversion, and resampling completed successfully and saved as {}", output_path);
 
     Ok(())
 }
