@@ -75,8 +75,3 @@ futures-util = "0.3.30"
 bytes = "0.5.6"
 v_common = { package = "v-common", version = "=0.10.16" }
 #v_common = { package = "v-common", path = "../../../v-common" }
-
-rubato = "0.16.0"
-hound = "3.4.0"
-opus = "0.3.0"
-ogg = "0.7"

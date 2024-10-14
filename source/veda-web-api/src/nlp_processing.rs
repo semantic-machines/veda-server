@@ -7,16 +7,9 @@ use chrono::Utc;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::{StreamExt, TryStreamExt};
-use hound::{SampleFormat, WavSpec, WavWriter};
-use ogg::reading::PacketReader;
-use opus::Decoder;
 use regex::RegexBuilder;
-use rubato::{FftFixedInOut, Resampler};
 use serde::Deserialize;
 use serde_json::Value;
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs;
@@ -25,9 +18,6 @@ use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
-const INPUT_SAMPLE_RATE: usize = 48000; // Частота дискретизации Opus
-const OUTPUT_SAMPLE_RATE: usize = 16000; // Целевая частота дискретизации
-const CHANNELS: usize = 2; // Стерео
 
 #[derive(Deserialize)]
 struct PhrasesToRemove {
@@ -66,92 +56,12 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     Err(actix_web::error::ErrorBadRequest("Could not save file"))
 }
 
-// Декодирование Opus и пересемплирование до 16 кГц, запись в моно WAV
-async fn decode_opus_to_wav(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    // Открываем входной файл Ogg Opus
-    let input_file = File::open(input_path)?;
-    let reader = BufReader::new(input_file);
-
-    // Инициализируем Ogg PacketReader
-    let mut packet_reader = PacketReader::new(reader);
-
-    // Инициализируем Opus-декодер
-    let mut decoder = Decoder::new(INPUT_SAMPLE_RATE as u32, opus::Channels::Stereo).expect("Failed to create Opus decoder");
-
-    // Открываем выходной файл для записи в формате WAV
-    let output_file = File::create(output_path)?;
-    let writer = BufWriter::new(output_file);
-
-    // Указываем спецификации WAV файла (целевые параметры: 16 кГц, моно)
-    let spec = WavSpec {
-        channels: 1, // Указываем моно (1 канал)
-        sample_rate: OUTPUT_SAMPLE_RATE as u32,
-        bits_per_sample: 16,
-        sample_format: SampleFormat::Int,
-    };
-
-    // Создаем WAV writer с выбранными спецификациями
-    let mut wav_writer = WavWriter::new(writer, spec).unwrap();
-
-    // Инициализируем ресемплер для изменения частоты с 48 кГц на 16 кГц
-    let mut resampler = FftFixedInOut::new(INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE, 960, 1).unwrap(); // 1 канал для моно
-
-    // Буфер для декодированных PCM данных
-    let mut pcm_buffer = vec![0; 960 * CHANNELS];
-
-    // Читаем Ogg пакеты и передаем их в Opus-декодер
-    while let Ok(Some(packet)) = packet_reader.read_packet() {
-        // Пропускаем пакеты с неподходящим размером
-        if packet.data.len() < 1 || packet.data.len() > 1275 {
-            continue;
-        }
-
-        // Декодируем кадр Opus
-        match decoder.decode(&packet.data, &mut pcm_buffer, false) {
-            Ok(decoded_samples) => {
-                // Преобразуем декодированные PCM данные в моно, усредняя левый и правый каналы
-                let mono_input: Vec<f32> = pcm_buffer
-                    .chunks_exact(CHANNELS) // Разбиваем на стерео кадры
-                    .take(decoded_samples) // Берем только декодированные кадры
-                    .map(|frame| {
-                        let left = frame[0] as f32 / 32768.0;
-                        let right = frame[1] as f32 / 32768.0;
-                        (left + right) / 2.0 // Усредняем левый и правый каналы
-                    })
-                    .collect();
-
-                // Ресемплируем данные
-                let resampled = resampler.process(&[mono_input], None).expect("Failed to resample");
-
-                // Преобразуем результат в i16 и записываем в WAV
-                for &sample in &resampled[0] {
-                    let output_sample = (sample * 32768.0).clamp(-32768.0, 32767.0) as i16;
-                    wav_writer.write_sample(output_sample).unwrap();
-                }
-            },
-            Err(e) => {
-                error!("Failed to decode Opus frame: {:?}", e);
-                continue;
-            },
-        }
-    }
-
-    wav_writer.finalize().unwrap();
-
-    info!("Decoding, mono conversion, and resampling completed successfully and saved as {}", output_path);
-
-    Ok(())
-}
 
 // Функция транскрипции с использованием WAV файла
 async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
     info!("Starting transcription for file: {}", filepath);
 
-    let output_path = filepath.replace(".ogg", "_converted.wav");
-    decode_opus_to_wav(&filepath, &output_path).await.map_err(|e| {
-        info!("Failed to decode audio: {}", e);
-        actix_web::error::ErrorInternalServerError(format!("Audio decoding failed: {}", e))
-    })?;
+    let output_path = filepath.clone();
 
     let file_content = fs::read(&output_path).await.map_err(|e| {
         info!("Failed to read converted file: {}", e);
@@ -197,14 +107,14 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
 
     info!("Transcription successful for file: {}", filepath);
 
-    fs::remove_file(&filepath).await.map_err(|e| {
-        info!("Failed to remove original file: {}", e);
-        actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e))
-    })?;
-    fs::remove_file(&output_path).await.map_err(|e| {
-        info!("Failed to remove converted file: {}", e);
-        actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e))
-    })?;
+ //   fs::remove_file(&filepath).await.map_err(|e| {
+ //       info!("Failed to remove original file: {}", e);
+ //       actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e))
+ //   })?;
+ //   fs::remove_file(&output_path).await.map_err(|e| {
+ //       info!("Failed to remove converted file: {}", e);
+ //       actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e))
+ //   })?;
 
     // Загрузка фраз для удаления
     let phrases_text = fs::read_to_string("./nlp_phrases_to_remove.toml")
