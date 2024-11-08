@@ -2,8 +2,10 @@ use crate::common::{extract_addr, get_user_info, log, log_w, NLPServerConfig, Ti
 use actix_multipart::Multipart;
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
+use anyhow::Result as AnyhowResult;
 use async_std::path::Path;
 use chrono::Utc;
+use config::{Config, File};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::{StreamExt, TryStreamExt};
@@ -18,6 +20,26 @@ use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIConfig {
+    api_key: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TranscriptionConfig {
+    openai: OpenAIConfig,
+    use_local_model: bool,
+}
+
+impl TranscriptionConfig {
+    pub fn load() -> AnyhowResult<Self> {
+        let config = Config::builder().add_source(File::with_name("config/transcription")).build()?;
+
+        Ok(config.try_deserialize()?)
+    }
+}
 
 #[derive(Deserialize)]
 struct PhrasesToRemove {
@@ -56,12 +78,65 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     Err(actix_web::error::ErrorBadRequest("Could not save file"))
 }
 
+async fn transcribe_with_openai(filepath: &str, config: &OpenAIConfig) -> Result<String, actix_web::Error> {
+    info!("Starting OpenAI transcription for file: {}", filepath);
 
-// Функция транскрипции с использованием WAV файла
-async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
+    let file_content = fs::read(filepath).await.map_err(|e| {
+        info!("Failed to read audio file: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to read audio file: {}", e))
+    })?;
+
+    let file_name = Path::new(filepath).file_name().and_then(|name| name.to_str()).unwrap_or("audio.ogg");
+
+    let part = reqwest::multipart::Part::bytes(file_content).file_name(file_name.to_string()).mime_str("audio/ogg").map_err(|e| {
+        info!("Failed to create multipart: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e))
+    })?;
+
+    let form = reqwest::multipart::Form::new().part("file", part).text("model", config.model.clone()).text("response_format", "json");
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.openai.com/v1/audio/transcriptions")
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| {
+            info!("OpenAI API error: {}", e);
+            actix_web::error::ErrorInternalServerError(format!("OpenAI API error: {}", e))
+        })?;
+
+    if !response.status().is_success() {
+        info!("OpenAI API returned error: {}", response.status());
+        return Err(actix_web::error::ErrorInternalServerError(format!(
+            "OpenAI API returned error status: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )));
+    }
+
+    let response_text = response.text().await.map_err(|e| {
+        info!("Failed to read OpenAI response: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to read OpenAI response: {}", e))
+    })?;
+
+    let json: Value = serde_json::from_str(&response_text).map_err(|e| {
+        info!("Failed to parse JSON response: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to parse JSON response: {}", e))
+    })?;
+
+    let transcription = json["text"].as_str().ok_or_else(|| actix_web::error::ErrorInternalServerError("Missing 'text' field in response"))?.to_string();
+
+    info!("OpenAI transcription successful for file: {}", filepath);
+
+    Ok(transcription)
+}
+
+async fn transcribe_local(filepath: &str, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
     info!("Starting transcription for file: {}", filepath);
 
-    let output_path = filepath.clone();
+    let output_path = filepath.to_string();
 
     let file_content = fs::read(&output_path).await.map_err(|e| {
         info!("Failed to read converted file: {}", e);
@@ -107,29 +182,45 @@ async fn transcribe(filepath: String, nlp_config: &NLPServerConfig) -> Result<St
 
     info!("Transcription successful for file: {}", filepath);
 
- //   fs::remove_file(&filepath).await.map_err(|e| {
- //       info!("Failed to remove original file: {}", e);
- //       actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e))
- //   })?;
- //   fs::remove_file(&output_path).await.map_err(|e| {
- //       info!("Failed to remove converted file: {}", e);
- //       actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e))
- //   })?;
+    fs::remove_file(&output_path).await.map_err(|e| {
+        info!("Failed to remove converted file: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e))
+    })?;
 
-    // Загрузка фраз для удаления
+    Ok(transcription)
+}
+
+async fn transcribe(filepath: String, nlp_config: &NLPServerConfig, transcription_config: &TranscriptionConfig) -> Result<String, actix_web::Error> {
+    let transcription = if transcription_config.use_local_model {
+        transcribe_local(&filepath, nlp_config).await?
+    } else {
+        transcribe_with_openai(&filepath, &transcription_config.openai).await?
+    };
+
+    fs::remove_file(&filepath).await.map_err(|e| {
+        info!("Failed to remove original file: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to remove original file: {}", e))
+    })?;
+
     let phrases_text = fs::read_to_string("./nlp_phrases_to_remove.toml")
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to read nlp_phrases_to_remove.toml: {}", e)))?;
+
     let phrases_to_remove: PhrasesToRemove =
         toml::from_str(&phrases_text).map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to parse nlp_phrases_to_remove.toml: {}", e)))?;
 
-    // Очистка транскрипции
-    let cleaned_transcription = clean_text(&transcription, &phrases_to_remove.phrases);
-
-    Ok(cleaned_transcription)
+    Ok(clean_text(&transcription, &phrases_to_remove.phrases))
 }
 
-// Основной обработчик Actix Web
+fn clean_text(text: &str, phrases: &[String]) -> String {
+    let mut cleaned_text = text.to_string();
+    for phrase in phrases {
+        let re = RegexBuilder::new(&regex::escape(phrase)).case_insensitive(true).build().unwrap();
+        cleaned_text = re.replace_all(&cleaned_text, "").to_string();
+    }
+    cleaned_text.trim().to_string()
+}
+
 pub async fn recognize_audio(
     params: web::Query<TicketRequest>,
     ticket_cache: web::Data<UserContextCache>,
@@ -138,6 +229,7 @@ pub async fn recognize_audio(
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     nlp_config: web::Data<NLPServerConfig>,
+    transcription_config: web::Data<TranscriptionConfig>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let start_time = Instant::now();
 
@@ -150,19 +242,9 @@ pub async fn recognize_audio(
     };
 
     let filepath = save_file(payload).await?;
-    let transcription = transcribe(filepath, &nlp_config).await?;
+    let transcription = transcribe(filepath, &nlp_config, &transcription_config).await?;
 
     log(Some(&start_time), &uinf, "recognize_audio", "success", ResultCode::Ok);
 
     Ok(HttpResponse::Ok().content_type("text/plain").body(transcription))
-}
-
-// Функция для очистки текста
-fn clean_text(text: &str, phrases: &[String]) -> String {
-    let mut cleaned_text = text.to_string();
-    for phrase in phrases {
-        let re = RegexBuilder::new(&regex::escape(phrase)).case_insensitive(true).build().unwrap();
-        cleaned_text = re.replace_all(&cleaned_text, "").to_string();
-    }
-    cleaned_text.trim().to_string()
 }
