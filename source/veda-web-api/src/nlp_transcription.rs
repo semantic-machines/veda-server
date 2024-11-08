@@ -1,11 +1,9 @@
-use crate::common::{extract_addr, get_user_info, log, log_w, NLPServerConfig, TicketRequest, UserContextCache, UserId};
+use crate::common::{extract_addr, get_user_info, log, log_w, NLPServerConfig, TicketRequest, TranscriptionConfig, UserContextCache, UserId};
 use actix_multipart::Multipart;
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
-use anyhow::Result as AnyhowResult;
 use async_std::path::Path;
 use chrono::Utc;
-use config::{Config, File};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::{StreamExt, TryStreamExt};
@@ -25,20 +23,6 @@ const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 pub struct OpenAIConfig {
     api_key: String,
     model: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TranscriptionConfig {
-    openai: OpenAIConfig,
-    use_local_model: bool,
-}
-
-impl TranscriptionConfig {
-    pub fn load() -> AnyhowResult<Self> {
-        let config = Config::builder().add_source(File::with_name("config/transcription")).build()?;
-
-        Ok(config.try_deserialize()?)
-    }
 }
 
 #[derive(Deserialize)]
@@ -229,7 +213,7 @@ pub async fn recognize_audio(
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     nlp_config: web::Data<NLPServerConfig>,
-    transcription_config: web::Data<TranscriptionConfig>,
+    transcription_config: web::Data<Option<TranscriptionConfig>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let start_time = Instant::now();
 
@@ -241,8 +225,14 @@ pub async fn recognize_audio(
         },
     };
 
+    let config = transcription_config.as_ref().as_ref().ok_or_else(|| {
+        let error_msg = "Transcription configuration is not available";
+        info!("{}", error_msg);
+        actix_web::error::ErrorInternalServerError(error_msg)
+    })?;
+
     let filepath = save_file(payload).await?;
-    let transcription = transcribe(filepath, &nlp_config, &transcription_config).await?;
+    let transcription = transcribe(filepath, &nlp_config, &config).await?;
 
     log(Some(&start_time), &uinf, "recognize_audio", "success", ResultCode::Ok);
 

@@ -19,7 +19,7 @@ extern crate serde_derive;
 extern crate serde_json;
 
 use crate::auth::{authenticate_get, authenticate_post, get_membership, get_rights, get_rights_origin, get_ticket_trusted, is_ticket_valid, logout};
-use crate::common::{db_connector, NLPServerConfig, UserContextCache, VQLClient, VQLClientConnectType};
+use crate::common::{db_connector, NLPServerConfig, TranscriptionConfig, UserContextCache, VQLClient, VQLClientConnectType};
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
@@ -195,6 +195,8 @@ async fn main() -> std::io::Result<()> {
             }
         }
 
+        let transcription_config = TranscriptionConfig::load().map_err(|e| info!("Failed to load transcription config: {}", e)).ok();
+
         let nlp_server_config = NLPServerConfig {
             whisper_server_url: Module::get_property("whisper_server_url").unwrap_or_else(|| "http://localhost:8086".to_string()),
             llama_server_url: Module::get_property("llama_server_url").unwrap_or_else(|| "http://localhost:8087".to_string()),
@@ -234,6 +236,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(json_cfg)
             .data(mfp)
             .app_data(web::Data::new(nlp_server_config))
+            .app_data(web::Data::new(transcription_config))
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
                 read_tickets: ticket_cache_read,

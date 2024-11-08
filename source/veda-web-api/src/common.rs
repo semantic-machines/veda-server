@@ -1,6 +1,9 @@
+use crate::nlp_transcription::OpenAIConfig;
 use crate::VQLHttpClient;
 use actix_web::{web, HttpMessage, HttpRequest};
+use anyhow::Result as AnyhowResult;
 use async_std::io;
+use config::{Config, File};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::SinkExt;
@@ -392,5 +395,19 @@ pub(crate) fn db_connector(tt_config: &Option<ClientConfig>) -> AStorage {
             tt: None,
             lmdb: Some(Mutex::from(LMDBStorage::new(BASE_PATH, StorageMode::ReadOnly, Some(1000)))),
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TranscriptionConfig {
+    pub(crate) openai: OpenAIConfig,
+    pub(crate) use_local_model: bool,
+}
+
+impl TranscriptionConfig {
+    pub fn load() -> AnyhowResult<Self> {
+        let config = Config::builder().add_source(File::with_name("./config/transcription.toml")).build()?;
+
+        Ok(config.try_deserialize()?)
     }
 }
