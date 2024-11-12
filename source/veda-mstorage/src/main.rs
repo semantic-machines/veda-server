@@ -467,10 +467,8 @@ fn operation_prepare(cmd: IndvOp, op_id: &mut i64, new_indv: &mut Individual, sy
         new_indv.add_datetime("v-s:created", Utc::now().naive_utc().timestamp());
     }
 
-    let mut prev_state_c1 = vec![];
     if cmd == IndvOp::Remove {
         prev_indv.set_bool("v-s:deleted", true);
-        prev_state_c1 = prev_state.clone();
     }
 
     // Apply the command to the previous individual state and update the counter
@@ -496,7 +494,7 @@ fn operation_prepare(cmd: IndvOp, op_id: &mut i64, new_indv: &mut Individual, sy
     // If the command is removal, set the update counter and add it to the transaction
     if cmd == IndvOp::Remove {
         new_indv.set_integer("v-s:updateCounter", upd_counter);
-        if !add_to_transaction(IndvOp::Remove, &cmd, new_indv, prev_state_c1, upd_counter, transaction) {
+        if !add_to_transaction(IndvOp::Remove, &cmd, &mut prev_indv, Vec::default(), upd_counter, transaction) {
             error!("failed to commit update to main DB");
             return Response::new(new_indv.get_id(), ResultCode::FailStore, -1, -1);
         }
@@ -511,24 +509,30 @@ fn add_to_transaction(cmd: IndvOp, original_cmd: &IndvOp, new_indv: &mut Individ
     // Create a new state vector to store the updated state of the individual
     let mut new_state: Vec<u8> = Vec::new();
 
-    // If the command is "Remove", do nothing
-    if cmd == IndvOp::Remove {
-
-        // Otherwise, encode the new individual's state using MessagePack
-    } else if to_msgpack(new_indv, &mut new_state).is_err() {
+    if to_msgpack(new_indv, &mut new_state).is_err() {
         // If there is an error, log the failure to update the individual and return false
         error!("failed to update individual, id = {}", new_indv.get_id());
         return false;
     }
 
-    // Create a new Transaction Item with the given information
-    let ti = TransactionItem {
-        indv_id: new_indv.get_id().to_owned(),
-        cmd,
-        original_cmd: original_cmd.clone(),
-        new_state,
-        prev_state,
-        update_counter,
+    let ti = if cmd == IndvOp::Remove {
+        TransactionItem {
+            indv_id: new_indv.get_id().to_owned(),
+            cmd,
+            original_cmd: original_cmd.clone(),
+            new_state: Vec::new(),
+            prev_state: new_state,
+            update_counter,
+        }
+    } else {
+        TransactionItem {
+            indv_id: new_indv.get_id().to_owned(),
+            cmd,
+            original_cmd: original_cmd.clone(),
+            new_state,
+            prev_state,
+            update_counter,
+        }
     };
 
     // Add the Transaction Item to the Transaction
