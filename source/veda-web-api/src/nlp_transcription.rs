@@ -4,12 +4,14 @@ use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
 use async_std::path::Path;
 use chrono::Utc;
+use ffmpeg_next as ffmpeg;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::{StreamExt, TryStreamExt};
 use regex::RegexBuilder;
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs;
@@ -30,12 +32,251 @@ struct PhrasesToRemove {
     phrases: Vec<String>,
 }
 
+struct AudioTranscoder {
+    stream: usize,
+    filter: ffmpeg::filter::Graph,
+    decoder: ffmpeg::codec::decoder::Audio,
+    encoder: ffmpeg::codec::encoder::Audio,
+    in_time_base: ffmpeg::Rational,
+    out_time_base: ffmpeg::Rational,
+}
+
+impl AudioTranscoder {
+    fn new(ictx: &mut ffmpeg::format::context::Input, octx: &mut ffmpeg::format::context::Output, output_path: &PathBuf) -> Result<Self, ffmpeg::Error> {
+        let input = ictx.streams().best(ffmpeg::media::Type::Audio).expect("could not find best audio stream");
+
+        let context = ffmpeg::codec::context::Context::from_parameters(input.parameters())?;
+        let mut decoder = context.decoder().audio()?;
+
+        let in_time_base = decoder.time_base();
+        let in_channels = decoder.channel_layout().channels();
+
+        info!("Input audio: channels={}, layout={:?}", in_channels, decoder.channel_layout());
+
+        let codec = ffmpeg::encoder::find(octx.format().codec(output_path, ffmpeg::media::Type::Audio)).expect("failed to find encoder").audio()?;
+
+        decoder.set_parameters(input.parameters())?;
+
+        let mut output = octx.add_stream(codec)?;
+        let context = ffmpeg::codec::context::Context::from_parameters(output.parameters())?;
+        let mut encoder = context.encoder().audio()?;
+
+        // Используем такое же количество каналов как во входном потоке
+        let channel_layout = if in_channels == 1 {
+            ffmpeg::channel_layout::ChannelLayout::MONO
+        } else {
+            ffmpeg::channel_layout::ChannelLayout::STEREO
+        };
+
+        // Настраиваем параметры кодирования
+        encoder.set_rate(48000);
+        encoder.set_channel_layout(channel_layout);
+        encoder.set_channels(channel_layout.channels());
+        encoder.set_format(ffmpeg::format::Sample::F32(ffmpeg::format::sample::Type::Planar));
+
+        // Устанавливаем битрейт в зависимости от количества каналов
+        let bit_rate = if in_channels == 1 {
+            96_000
+        } else {
+            192_000
+        };
+        encoder.set_bit_rate(bit_rate);
+
+        let time_base = ffmpeg::Rational(1, 48000);
+        encoder.set_time_base(time_base);
+        output.set_time_base(time_base);
+
+        let encoder = encoder.open_as(codec)?;
+        let out_time_base = output.time_base();
+        output.set_parameters(&encoder);
+
+        // Создаем фильтр в зависимости от количества входных каналов
+        let filter_spec = if in_channels == 1 {
+            "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=mono,asetnsamples=n=64"
+        } else {
+            "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetnsamples=n=64"
+        };
+
+        let filter = Self::create_filter(filter_spec, &decoder, &encoder)?;
+
+        info!("Audio encoder configured: rate=48000Hz, channels={}, bit_rate={}kbps", channel_layout.channels(), bit_rate / 1000);
+
+        Ok(AudioTranscoder {
+            stream: input.index(),
+            filter,
+            decoder,
+            encoder,
+            in_time_base,
+            out_time_base,
+        })
+    }
+
+    fn create_filter(spec: &str, decoder: &ffmpeg::codec::decoder::Audio, encoder: &ffmpeg::codec::encoder::Audio) -> Result<ffmpeg::filter::Graph, ffmpeg::Error> {
+        let mut filter = ffmpeg::filter::Graph::new();
+
+        let args = format!(
+            "time_base={}:sample_rate={}:sample_fmt={}:channel_layout=0x{:x}",
+            decoder.time_base(),
+            decoder.rate(),
+            decoder.format().name(),
+            decoder.channel_layout().bits()
+        );
+
+        info!("Input filter args: {}", args);
+
+        filter.add(&ffmpeg::filter::find("abuffer").unwrap(), "in", &args)?;
+        filter.add(&ffmpeg::filter::find("abuffersink").unwrap(), "out", "")?;
+
+        {
+            let mut out = filter.get("out").unwrap();
+            out.set_sample_format(encoder.format());
+            out.set_channel_layout(encoder.channel_layout());
+            out.set_sample_rate(encoder.rate());
+        }
+
+        filter.output("in", 0)?.input("out", 0)?.parse(spec)?;
+        filter.validate()?;
+
+        info!("Audio filter configured: {}", spec);
+        info!("Filter graph dump: {}", filter.dump());
+
+        Ok(filter)
+    }
+
+    async fn transcode(input_path: &str, output_path: &str) -> Result<(), ffmpeg::Error> {
+        ffmpeg::init()?;
+
+        info!("Starting transcoding from {} to {}", input_path, output_path);
+
+        let mut ictx = ffmpeg::format::input(&input_path)?;
+        let mut octx = ffmpeg::format::output(&output_path)?;
+
+        if let Some(stream) = ictx.streams().best(ffmpeg::media::Type::Audio) {
+            let params = stream.parameters();
+            info!("Input stream: index={}, time_base={:?}, codec_type={:?}", stream.index(), stream.time_base(), params.medium());
+        }
+
+        let output_pathbuf = PathBuf::from(output_path);
+        let mut transcoder = Self::new(&mut ictx, &mut octx, &output_pathbuf)?;
+
+        octx.set_metadata(ictx.metadata().to_owned());
+        octx.write_header()?;
+
+        let mut total_frames = 0;
+        let mut total_packets = 0;
+
+        // Главный цикл обработки
+        for (stream, mut packet) in ictx.packets() {
+            if stream.index() == transcoder.stream {
+                total_packets += 1;
+                if total_packets % 100 == 0 {
+                    info!("Processing packet {}", total_packets);
+                }
+
+                packet.rescale_ts(stream.time_base(), transcoder.in_time_base);
+                transcoder.decoder.send_packet(&packet)?;
+
+                let mut decoded = ffmpeg::frame::Audio::empty();
+                while transcoder.decoder.receive_frame(&mut decoded).is_ok() {
+                    total_frames += 1;
+
+                    transcoder.filter.get("in").unwrap().source().add(&decoded)?;
+
+                    let mut filtered = ffmpeg::frame::Audio::empty();
+                    while transcoder.filter.get("out").unwrap().sink().frame(&mut filtered).is_ok() {
+                        if let Err(e) = transcoder.encoder.send_frame(&filtered) {
+                            info!("Error encoding frame {}: {:?}", total_frames, e);
+                            return Err(e);
+                        }
+
+                        let mut encoded = ffmpeg::Packet::empty();
+                        while transcoder.encoder.receive_packet(&mut encoded).is_ok() {
+                            encoded.set_stream(0);
+                            encoded.rescale_ts(transcoder.in_time_base, transcoder.out_time_base);
+                            if let Err(e) = encoded.write_interleaved(&mut octx) {
+                                info!("Error writing packet: {:?}", e);
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("Processed {} packets, {} frames", total_packets, total_frames);
+
+        // Очищаем декодер
+        transcoder.decoder.send_eof()?;
+        let mut decoded = ffmpeg::frame::Audio::empty();
+        while transcoder.decoder.receive_frame(&mut decoded).is_ok() {
+            transcoder.filter.get("in").unwrap().source().add(&decoded)?;
+        }
+
+        // Очищаем фильтр
+        transcoder.filter.get("in").unwrap().source().flush()?;
+        let mut filtered = ffmpeg::frame::Audio::empty();
+        while transcoder.filter.get("out").unwrap().sink().frame(&mut filtered).is_ok() {
+            transcoder.encoder.send_frame(&filtered)?;
+
+            let mut encoded = ffmpeg::Packet::empty();
+            while transcoder.encoder.receive_packet(&mut encoded).is_ok() {
+                encoded.set_stream(0);
+                encoded.write_interleaved(&mut octx)?;
+            }
+        }
+
+        // Очищаем энкодер
+        transcoder.encoder.send_eof()?;
+        let mut encoded = ffmpeg::Packet::empty();
+        while transcoder.encoder.receive_packet(&mut encoded).is_ok() {
+            encoded.set_stream(0);
+            encoded.write_interleaved(&mut octx)?;
+        }
+
+        // Записываем трейлер
+        if let Err(e) = octx.write_trailer() {
+            info!("Error writing trailer: {:?}", e);
+            return Err(e);
+        }
+
+        info!("Transcoding completed successfully");
+        Ok(())
+    }
+}
+pub async fn get_media_format(filepath: &str) -> Result<String, ffmpeg::Error> {
+    ffmpeg::init()?;
+
+    let mut ictx = ffmpeg::format::input(&filepath)?;
+
+    // name() возвращает &str, поэтому нам не нужна проверка Some
+    let format_name = ictx.format().name().to_string();
+    Ok(format_name.to_string())
+}
+
+async fn detect_format_ffmpeg(filepath: &str) -> Result<bool, ffmpeg::Error> {
+    let format = get_media_format(filepath).await?;
+
+    let mut ictx = ffmpeg::format::input(&filepath)?;
+    let stream_info = if let Some(stream) = ictx.streams().best(ffmpeg::media::Type::Audio) {
+        format!("index: {}, id: {}, media_type: {:?}", stream.index(), stream.id(), stream.parameters().medium())
+    } else {
+        "no audio stream".to_string()
+    };
+
+    // QuickTime/MOV формат требует перекодирования для Whisper
+    let needs_transcoding = format.contains("quicktime") || format.contains("mov");
+
+    info!("Format: {}, Stream info: {}, needs transcoding: {}", format, stream_info, needs_transcoding);
+
+    Ok(needs_transcoding)
+}
 async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     if let Ok(Some(mut field)) = payload.try_next().await {
         let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f").to_string();
-        let filepath = format!("/tmp/audio_{}.ogg", timestamp);
+        let temp_filepath = format!("/tmp/audio_temp_{}", timestamp);
+        let final_filepath = format!("/tmp/audio_{}.ogg", timestamp);
 
-        let mut f = fs::File::create(&filepath).await?;
+        let mut f = fs::File::create(&temp_filepath).await?;
         let mut total_size = 0;
 
         while let Some(chunk) = field.next().await {
@@ -43,7 +284,7 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
             total_size += data.len();
 
             if total_size > MAX_FILE_SIZE {
-                fs::remove_file(&filepath).await?;
+                fs::remove_file(&temp_filepath).await?;
                 return Err(actix_web::error::ErrorBadRequest("File too large"));
             }
 
@@ -53,13 +294,37 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
         f.flush().await?;
 
         if total_size == 0 {
-            fs::remove_file(&filepath).await?;
+            fs::remove_file(&temp_filepath).await?;
             return Err(actix_web::error::ErrorBadRequest("Empty file"));
         }
 
-        return Ok(filepath);
+        match detect_format_ffmpeg(&temp_filepath).await {
+            Ok(needs_transcoding) => {
+                if needs_transcoding {
+                    info!("QuickTime/MOV format detected, converting to OGG for Whisper compatibility");
+                    match AudioTranscoder::transcode(&temp_filepath, &final_filepath).await {
+                        Ok(_) => {
+                            fs::remove_file(&temp_filepath).await?;
+                            Ok(final_filepath)
+                        },
+                        Err(e) => {
+                            fs::remove_file(&temp_filepath).await?;
+                            Err(actix_web::error::ErrorInternalServerError(format!("Transcoding failed: {}", e)))
+                        },
+                    }
+                } else {
+                    fs::rename(&temp_filepath, &final_filepath).await?;
+                    Ok(final_filepath)
+                }
+            },
+            Err(e) => {
+                fs::remove_file(&temp_filepath).await?;
+                Err(actix_web::error::ErrorInternalServerError(format!("Failed to detect format: {}", e)))
+            },
+        }
+    } else {
+        Err(actix_web::error::ErrorBadRequest("Could not save file"))
     }
-    Err(actix_web::error::ErrorBadRequest("Could not save file"))
 }
 
 async fn transcribe_with_openai(filepath: &str, config: &OpenAIConfig) -> Result<String, actix_web::Error> {
@@ -120,18 +385,16 @@ async fn transcribe_with_openai(filepath: &str, config: &OpenAIConfig) -> Result
 async fn transcribe_local(filepath: &str, nlp_config: &NLPServerConfig) -> Result<String, actix_web::Error> {
     info!("Starting transcription for file: {}", filepath);
 
-    let output_path = filepath.to_string();
-
-    let file_content = fs::read(&output_path).await.map_err(|e| {
-        info!("Failed to read converted file: {}", e);
-        actix_web::error::ErrorInternalServerError(format!("Failed to read converted file: {}", e))
+    let file_content = fs::read(filepath).await.map_err(|e| {
+        info!("Failed to read audio file: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to read audio file: {}", e))
     })?;
 
-    let file_name = Path::new(&output_path).file_name().and_then(|name| name.to_str()).unwrap_or("audio.wav");
+    let file_name = Path::new(filepath).file_name().and_then(|name| name.to_str()).unwrap_or("audio.ogg");
 
-    info!("Sending file {} to Whisper.cpp for transcription", file_name);
+    info!("Sending file {} to Whisper for transcription", file_name);
 
-    let part = reqwest::multipart::Part::bytes(file_content).file_name(file_name.to_string()).mime_str("audio/wav").map_err(|e| {
+    let part = reqwest::multipart::Part::bytes(file_content).file_name(file_name.to_string()).mime_str("audio/ogg").map_err(|e| {
         info!("Failed to create multipart: {}", e);
         actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e))
     })?;
@@ -139,22 +402,22 @@ async fn transcribe_local(filepath: &str, nlp_config: &NLPServerConfig) -> Resul
     let form = reqwest::multipart::Form::new().part("file", part).text("temperature", "0.0").text("temperature_inc", "0.2").text("response_format", "json");
 
     let response = reqwest::Client::new().post(&format!("{}/inference", nlp_config.whisper_server_url)).multipart(form).send().await.map_err(|e| {
-        info!("Whisper.cpp server error: {}", e);
-        actix_web::error::ErrorInternalServerError(format!("Whisper.cpp server error: {}", e))
+        info!("Whisper server error: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Whisper server error: {}", e))
     })?;
 
     if !response.status().is_success() {
-        info!("Whisper.cpp server returned error: {}", response.status());
+        info!("Whisper server returned error: {}", response.status());
         return Err(actix_web::error::ErrorInternalServerError(format!(
-            "Whisper.cpp server returned error status: {} {}",
+            "Whisper server returned error status: {} {}",
             response.status(),
             response.text().await.unwrap_or_default()
         )));
     }
 
     let response_text = response.text().await.map_err(|e| {
-        info!("Failed to read Whisper.cpp response: {}", e);
-        actix_web::error::ErrorInternalServerError(format!("Failed to read Whisper.cpp response: {}", e))
+        info!("Failed to read Whisper response: {}", e);
+        actix_web::error::ErrorInternalServerError(format!("Failed to read Whisper response: {}", e))
     })?;
 
     let json: Value = serde_json::from_str(&response_text).map_err(|e| {
@@ -166,7 +429,7 @@ async fn transcribe_local(filepath: &str, nlp_config: &NLPServerConfig) -> Resul
 
     info!("Transcription successful for file: {}", filepath);
 
-    fs::remove_file(&output_path).await.map_err(|e| {
+    fs::remove_file(&filepath).await.map_err(|e| {
         info!("Failed to remove converted file: {}", e);
         actix_web::error::ErrorInternalServerError(format!("Failed to remove converted file: {}", e))
     })?;

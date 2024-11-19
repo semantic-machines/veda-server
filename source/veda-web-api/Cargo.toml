@@ -1,6 +1,6 @@
 [package]
 name = "veda-web-api"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 
 [dependencies]
@@ -75,5 +75,7 @@ futures-util = "0.3.30"
 bytes = "0.5.6"
 anyhow = "1.0.89"
 config = "0.13"
+ffmpeg-next = "6.0"
+
 #v_common = { package = "v-common", path = "../../../v-common", features = ["tokio_0_2", "tt_2", "awc_2"]}
 v_common = { package = "v-common", version = "=0.10.19", features = ["tokio_0_2", "tt_2", "awc_2"] }
