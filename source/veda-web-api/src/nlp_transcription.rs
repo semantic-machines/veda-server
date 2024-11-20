@@ -4,20 +4,23 @@ use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
 use async_std::path::Path;
 use chrono::Utc;
-use ffmpeg_next as ffmpeg;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::{StreamExt, TryStreamExt};
 use regex::RegexBuilder;
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::obj::ResultCode;
+
+#[cfg(feature = "audio_convert")]
+use ffmpeg_next as ffmpeg;
+#[cfg(feature = "audio_convert")]
+use std::path::PathBuf;
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
@@ -32,6 +35,7 @@ struct PhrasesToRemove {
     phrases: Vec<String>,
 }
 
+#[cfg(feature = "audio_convert")]
 struct AudioTranscoder {
     stream: usize,
     filter: ffmpeg::filter::Graph,
@@ -41,6 +45,7 @@ struct AudioTranscoder {
     out_time_base: ffmpeg::Rational,
 }
 
+#[cfg(feature = "audio_convert")]
 impl AudioTranscoder {
     fn new(ictx: &mut ffmpeg::format::context::Input, octx: &mut ffmpeg::format::context::Output, output_path: &PathBuf) -> Result<Self, ffmpeg::Error> {
         let input = ictx.streams().best(ffmpeg::media::Type::Audio).expect("could not find best audio stream");
@@ -111,6 +116,7 @@ impl AudioTranscoder {
         })
     }
 
+    #[cfg(feature = "audio_convert")]
     fn create_filter(spec: &str, decoder: &ffmpeg::codec::decoder::Audio, encoder: &ffmpeg::codec::encoder::Audio) -> Result<ffmpeg::filter::Graph, ffmpeg::Error> {
         let mut filter = ffmpeg::filter::Graph::new();
 
@@ -143,6 +149,7 @@ impl AudioTranscoder {
         Ok(filter)
     }
 
+    #[cfg(feature = "audio_convert")]
     async fn transcode(input_path: &str, output_path: &str) -> Result<(), ffmpeg::Error> {
         ffmpeg::init()?;
 
@@ -243,33 +250,22 @@ impl AudioTranscoder {
         Ok(())
     }
 }
+
+#[cfg(feature = "audio_convert")]
 pub async fn get_media_format(filepath: &str) -> Result<String, ffmpeg::Error> {
     ffmpeg::init()?;
-
-    let mut ictx = ffmpeg::format::input(&filepath)?;
-
-    // name() возвращает &str, поэтому нам не нужна проверка Some
-    let format_name = ictx.format().name().to_string();
-    Ok(format_name.to_string())
+    let ictx = ffmpeg::format::input(&filepath)?;
+    Ok(ictx.format().name().to_string())
 }
 
+#[cfg(feature = "audio_convert")]
 async fn detect_format_ffmpeg(filepath: &str) -> Result<bool, ffmpeg::Error> {
     let format = get_media_format(filepath).await?;
-
-    let mut ictx = ffmpeg::format::input(&filepath)?;
-    let stream_info = if let Some(stream) = ictx.streams().best(ffmpeg::media::Type::Audio) {
-        format!("index: {}, id: {}, media_type: {:?}", stream.index(), stream.id(), stream.parameters().medium())
-    } else {
-        "no audio stream".to_string()
-    };
-
-    // QuickTime/MOV формат требует перекодирования для Whisper
     let needs_transcoding = format.contains("quicktime") || format.contains("mov");
-
-    info!("Format: {}, Stream info: {}, needs transcoding: {}", format, stream_info, needs_transcoding);
-
+    info!("Format: {}, needs transcoding: {}", format, needs_transcoding);
     Ok(needs_transcoding)
 }
+
 async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
     if let Ok(Some(mut field)) = payload.try_next().await {
         let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f").to_string();
@@ -298,29 +294,38 @@ async fn save_file(mut payload: Multipart) -> Result<String, actix_web::Error> {
             return Err(actix_web::error::ErrorBadRequest("Empty file"));
         }
 
-        match detect_format_ffmpeg(&temp_filepath).await {
-            Ok(needs_transcoding) => {
-                if needs_transcoding {
-                    info!("QuickTime/MOV format detected, converting to OGG for Whisper compatibility");
-                    match AudioTranscoder::transcode(&temp_filepath, &final_filepath).await {
-                        Ok(_) => {
-                            fs::remove_file(&temp_filepath).await?;
-                            Ok(final_filepath)
-                        },
-                        Err(e) => {
-                            fs::remove_file(&temp_filepath).await?;
-                            Err(actix_web::error::ErrorInternalServerError(format!("Transcoding failed: {}", e)))
-                        },
+        #[cfg(feature = "audio_convert")]
+        {
+            match detect_format_ffmpeg(&temp_filepath).await {
+                Ok(needs_transcoding) => {
+                    if needs_transcoding {
+                        info!("QuickTime/MOV format detected, converting to OGG for Whisper compatibility");
+                        match AudioTranscoder::transcode(&temp_filepath, &final_filepath).await {
+                            Ok(_) => {
+                                fs::remove_file(&temp_filepath).await?;
+                                Ok(final_filepath)
+                            },
+                            Err(e) => {
+                                fs::remove_file(&temp_filepath).await?;
+                                Err(actix_web::error::ErrorInternalServerError(format!("Transcoding failed: {}", e)))
+                            },
+                        }
+                    } else {
+                        fs::rename(&temp_filepath, &final_filepath).await?;
+                        Ok(final_filepath)
                     }
-                } else {
-                    fs::rename(&temp_filepath, &final_filepath).await?;
-                    Ok(final_filepath)
-                }
-            },
-            Err(e) => {
-                fs::remove_file(&temp_filepath).await?;
-                Err(actix_web::error::ErrorInternalServerError(format!("Failed to detect format: {}", e)))
-            },
+                },
+                Err(e) => {
+                    fs::remove_file(&temp_filepath).await?;
+                    Err(actix_web::error::ErrorInternalServerError(format!("Failed to detect format: {}", e)))
+                },
+            }
+        }
+
+        #[cfg(not(feature = "audio_convert"))]
+        {
+            fs::rename(&temp_filepath, &final_filepath).await?;
+            Ok(final_filepath)
         }
     } else {
         Err(actix_web::error::ErrorBadRequest("Could not save file"))
@@ -479,6 +484,11 @@ pub async fn recognize_audio(
     transcription_config: web::Data<Option<TranscriptionConfig>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let start_time = Instant::now();
+
+    #[cfg(feature = "audio_convert")]
+    {
+        info!("Audio conversion support is enabled (built with FFmpeg)");
+    }
 
     let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
