@@ -347,7 +347,7 @@ async fn transcribe_with_openai(filepath: &str, config: &OpenAIConfig) -> Result
         actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e))
     })?;
 
-    let form = reqwest::multipart::Form::new().part("file", part).text("model", config.model.clone()).text("response_format", "json");
+    let form = reqwest::multipart::Form::new().part("file", part).text("model", config.model.clone()).text("response_format", "json").text("language", "ru");
 
     let client = reqwest::Client::new();
     let response = client
@@ -404,7 +404,12 @@ async fn transcribe_local(filepath: &str, nlp_config: &NLPServerConfig) -> Resul
         actix_web::error::ErrorInternalServerError(format!("Failed to create multipart: {}", e))
     })?;
 
-    let form = reqwest::multipart::Form::new().part("file", part).text("temperature", "0.0").text("temperature_inc", "0.2").text("response_format", "json");
+    let form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("temperature", "0.0")
+        .text("temperature_inc", "0.2")
+        .text("response_format", "json")
+        .text("language", "ru");
 
     let response = reqwest::Client::new().post(&format!("{}/inference", nlp_config.whisper_server_url)).multipart(form).send().await.map_err(|e| {
         info!("Whisper server error: {}", e);
