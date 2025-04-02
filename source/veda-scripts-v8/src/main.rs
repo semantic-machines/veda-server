@@ -114,13 +114,18 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
         return Ok(());
     }
 
-    let mut vm_id = "main";
+    let mut vm_id = "";
     let args: Vec<String> = env::args().collect();
     for el in args.iter() {
         if el == "main" || el.starts_with("lp") {
             vm_id = el;
             break;
         }
+    }
+
+    if vm_id.is_empty() {
+        error!("failed to start, vm_id is empty");
+        return Err(1);
     }
 
     let process_name = "scripts_".to_owned() + vm_id;
