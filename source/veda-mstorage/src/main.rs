@@ -274,6 +274,7 @@ fn request_prepare(ctx: &mut Context, sys_ticket: &Ticket, op_id: &mut i64, requ
         "add_to" => IndvOp::AddTo,
         "set_in" => IndvOp::SetIn,
         "remove_from" => IndvOp::RemoveFrom,
+        "remove_predicates" => IndvOp::RemovePredicates,
         _ => {
             error!("unknown command {:?}", v["function"].as_str());
             return Err(ResultCode::BadRequest);
@@ -363,7 +364,7 @@ fn operation_prepare(cmd: IndvOp, op_id: &mut i64, new_indv: &mut Individual, sy
     }
 
     // Check if the previous individual object is empty and certain commands like AddTo, SetIn, and RemoveFrom are called
-    if prev_indv.is_empty() && (cmd == IndvOp::AddTo || cmd == IndvOp::SetIn || cmd == IndvOp::RemoveFrom) {
+    if prev_indv.is_empty() && (cmd == IndvOp::AddTo || cmd == IndvOp::SetIn || cmd == IndvOp::RemoveFrom || cmd == IndvOp::RemovePredicates) {
         error!("failed to update, cmd = {:?}, no prev_state, uri = {}", cmd, new_indv.get_id());
         return Response::new(new_indv.get_id(), ResultCode::FailStore, -1, -1);
     }
@@ -473,8 +474,8 @@ fn operation_prepare(cmd: IndvOp, op_id: &mut i64, new_indv: &mut Individual, sy
 
     // Apply the command to the previous individual state and update the counter
     // and add it to the transaction
-    if cmd == IndvOp::AddTo || cmd == IndvOp::SetIn || cmd == IndvOp::RemoveFrom || cmd == IndvOp::Remove {
-        if cmd == IndvOp::AddTo || cmd == IndvOp::SetIn || cmd == IndvOp::RemoveFrom {
+    if cmd == IndvOp::AddTo || cmd == IndvOp::SetIn || cmd == IndvOp::RemoveFrom || cmd == IndvOp::Remove || cmd == IndvOp::RemovePredicates{
+        if cmd == IndvOp::AddTo || cmd == IndvOp::SetIn || cmd == IndvOp::RemoveFrom || cmd == IndvOp::RemovePredicates{
             indv_apply_cmd(&cmd, &mut prev_indv, new_indv);
         }
         prev_indv.set_integer("v-s:updateCounter", upd_counter);
