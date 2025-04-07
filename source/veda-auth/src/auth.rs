@@ -1,4 +1,4 @@
-use crate::common::{create_new_credential, create_new_ticket, get_candidate_users_of_login, remove_secret, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH, N_ITER};
+use crate::common::{create_new_credential, create_new_ticket, get_candidate_users_of_login, remove_secret, send_notification_email, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH, N_ITER};
 use chrono::Utc;
 use data_encoding::HEXLOWER;
 use mustache::MapBuilder;
@@ -81,9 +81,15 @@ impl<'a> AuthWorkPlace<'a> {
                     return ticket;
                 }
             }
-        }
-        if candidate_account_ids.result_code != ResultCode::Ok {
+        } else if candidate_account_ids.result_code != ResultCode::Ok {
             error!("authenticate:,= query result={:?}", candidate_account_ids.result_code);
+        }
+
+        if self.secret == "?" {
+            warn!("Password reset requested for non-existent login: {}", self.login);
+
+            ticket.result = ResultCode::PasswordExpired;
+            return ticket;
         }
 
         error!("failed to authenticate: login = {}, password = {}, candidate users = {:?}", self.login, self.password, candidate_account_ids.result);
@@ -144,7 +150,7 @@ impl<'a> AuthWorkPlace<'a> {
                         let res = self.request_new_password(&mut person, self.edited, &mut account);
                         if res != ResultCode::Ok {
                             //                            ticket.result = res;
-                            return (true, res);
+                            return (true, ResultCode::PasswordExpired);
                         }
                     }
 
@@ -295,6 +301,14 @@ impl<'a> AuthWorkPlace<'a> {
 
         if let Some(account_origin) = account.get_first_literal("v-s:authOrigin") {
             if !account_origin.to_uppercase().contains("VEDA") {
+                if let Some(template) = &self.conf.denied_password_expired_notification_template {
+                    let mailbox = account.get_first_literal("v-s:mailbox").unwrap_or_default();
+                    user.parse_all();
+                    let user_name = user.get_first_literal("rdfs:label").unwrap_or_else(|| user.get_id().to_string());
+                    
+                    send_notification_email(template, &mailbox, &user_name, None, self.sys_ticket, self.backend);
+                    info!("sent notification about forbidden password change, user={}", account.get_id());
+                }
                 return ResultCode::ChangePasswordForbidden;
             }
         }
@@ -337,57 +351,17 @@ impl<'a> AuthWorkPlace<'a> {
             return ResultCode::InternalServerError;
         }
 
-        if let Some((subject_t_str, body_t_str)) = &self.conf.expired_pass_notification_template {
+        if let Some(template) = &self.conf.expired_pass_notification_template {
             let mailbox = account.get_first_literal("v-s:mailbox").unwrap_or_default();
-
-            if !mailbox.is_empty() && mailbox.len() > 3 {
-                let app_name = match self.backend.get_individual_s("v-s:vedaInfo") {
-                    Some(mut app_info) => {
-                        app_info.parse_all();
-                        app_info.get_first_literal("rdfs:label").unwrap_or_else(|| "Veda".to_string())
-                    },
-                    None => "Veda".to_string(),
-                };
-
-                user.parse_all();
-                let user_name = user.get_first_literal("rdfs:label").unwrap_or_else(|| user.get_id().to_string());
-
-                let map = MapBuilder::new().insert_str("app_name", app_name).insert_str("secret_code", n_secret.clone()).insert_str("user_name", user_name).build();
-
-                let mut subject = vec![];
-                if let Ok(t) = mustache::compile_str(subject_t_str) {
-                    if let Err(e) = t.render_data(&mut subject, &map) {
-                        error!("failed to render subject from template, err = {:?}", e);
-                    }
-                }
-
-                let mut body = vec![];
-                if let Ok(t) = mustache::compile_str(body_t_str) {
-                    if let Err(e) = t.render_data(&mut body, &map) {
-                        error!("failed to render body from template, err = {:?}", e);
-                    }
-                }
-
-                let mut mail_with_secret = Individual::default();
-                let uuid1 = "d:mail_".to_owned() + &Uuid::new_v4().to_string();
-                mail_with_secret.set_id(&uuid1);
-                mail_with_secret.add_uri("rdf:type", "v-s:Email");
-                mail_with_secret.add_string("v-s:recipientMailbox", &mailbox, Lang::none());
-                mail_with_secret.add_datetime("v-s:created", now);
-                mail_with_secret.add_uri("v-s:creator", "cfg:VedaSystemAppointment");
-                mail_with_secret.add_uri("v-wf:from", "cfg:VedaSystemAppointment");
-                mail_with_secret.add_string("v-s:subject", from_utf8(subject.as_slice()).unwrap_or_default(), Lang::none());
-                mail_with_secret.add_string("v-s:messageBody", from_utf8(body.as_slice()).unwrap_or_default(), Lang::none());
-
-                let res = self.backend.mstorage_api.update(self.sys_ticket, IndvOp::Put, &mail_with_secret);
-                if res.result != ResultCode::Ok {
-                    error!("failed to store email with new secret, user = {}", account.get_id());
-                    return ResultCode::AuthenticationFailed;
-                } else {
-                    info!("send {} new secret {} to mailbox {}, user={}", mail_with_secret.get_id(), n_secret, mailbox, account.get_id());
-                }
+            user.parse_all();
+            let user_name = user.get_first_literal("rdfs:label").unwrap_or_else(|| user.get_id().to_string());
+            
+            let result = send_notification_email(template, &mailbox, &user_name, Some(&n_secret), self.sys_ticket, self.backend);
+            if result != ResultCode::Ok {
+                error!("failed to send email with new secret, user = {}", account.get_id());
+                return ResultCode::AuthenticationFailed;
             } else {
-                error!("mailbox not found, user = {}", account.get_id());
+                info!("sent email with new secret {} to mailbox {}, user={}", n_secret, mailbox, account.get_id());
             }
         }
         ResultCode::PasswordExpired

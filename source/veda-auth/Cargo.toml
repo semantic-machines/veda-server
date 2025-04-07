@@ -1,6 +1,6 @@
 [package]
 name = "veda-auth"
-version = "0.1.2"
+version = "0.1.4"
 authors = ["Itiua <ValeriyBushenev@gmail.com>"]
 edition = "2021"
 
@@ -23,3 +23,7 @@ version = "3.0.0"
 
 v_common = { package = "v-common", version = "=0.10.6" }
 #v_common = { package = "v-common", path = "../../../v-common" }
+
+[profile.release]
+opt-level = 1
+

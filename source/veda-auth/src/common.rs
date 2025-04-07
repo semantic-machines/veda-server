@@ -20,6 +20,8 @@ use v_common::storage::common::{StorageId, VStorage};
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::{OptAuthorize, ResultCode};
 use v_common::v_authorization::common::{AuthorizationContext, Trace};
+use mustache::MapBuilder;
+use std::str::from_utf8;
 
 pub const EMPTY_SHA256_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 pub const ALLOW_TRUSTED_GROUP: &str = "cfg:TrustedAuthenticationUserGroup";
@@ -46,6 +48,7 @@ pub(crate) struct AuthConf {
     pub secret_lifetime: i64,
     pub pass_lifetime: i64,
     pub expired_pass_notification_template: Option<(String, String)>,
+    pub denied_password_expired_notification_template: Option<(String, String)>,
     pub check_ticket_ip: bool,
 }
 
@@ -61,6 +64,7 @@ impl Default for AuthConf {
             secret_lifetime: 12 * 60 * 60,
             pass_lifetime: 90 * 24 * 60 * 60,
             expired_pass_notification_template: None,
+            denied_password_expired_notification_template: None,
             check_ticket_ip: true,
         }
     }
@@ -345,6 +349,16 @@ pub(crate) fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
                 }
             }
         }
+
+        if let Some(v) = node.get_first_literal("cfg:denied_password_expired_notification_template") {
+            if let Some(mut i) = backend.get_individual_s(&v) {
+                if let Some(ss) = i.get_first_literal("v-s:notificationSubject") {
+                    if let Some(sb) = i.get_first_literal("v-s:notificationBody") {
+                        res.denied_password_expired_notification_template = Some((ss, sb));
+                    }
+                }
+            }
+        }
     }
 
     info!("read configuration: {:?}", res);
@@ -426,4 +440,73 @@ fn store(ticket_indv: &Individual, storage: &mut VStorage) -> bool {
         }
     }
     false
+}
+
+pub(crate) fn send_notification_email(
+    template: &(String, String),
+    mailbox: &str,
+    user_name: &str,
+    secret_code: Option<&str>,
+    sys_ticket: &str,
+    backend: &mut Backend,
+) -> ResultCode {
+    if mailbox.is_empty() || mailbox.len() <= 3 {
+        error!("mailbox not found or invalid: {}", mailbox);
+        return ResultCode::AuthenticationFailed;
+    }
+
+    let now = Utc::now().naive_utc().timestamp();
+    let app_name = match backend.get_individual_s("v-s:vedaInfo") {
+        Some(mut app_info) => {
+            app_info.parse_all();
+            app_info.get_first_literal("rdfs:label").unwrap_or_else(|| "Veda".to_string())
+        },
+        None => "Veda".to_string(),
+    };
+
+    let mut map_builder = MapBuilder::new()
+        .insert_str("app_name", app_name)
+        .insert_str("user_name", user_name);
+
+    if let Some(code) = secret_code {
+        map_builder = map_builder.insert_str("secret_code", code);
+    }
+
+    let map = map_builder.build();
+
+    let (subject_t_str, body_t_str) = template;
+    
+    let mut subject = vec![];
+    if let Ok(t) = mustache::compile_str(subject_t_str) {
+        if let Err(e) = t.render_data(&mut subject, &map) {
+            error!("failed to render subject from template, err = {:?}", e);
+        }
+    }
+
+    let mut body = vec![];
+    if let Ok(t) = mustache::compile_str(body_t_str) {
+        if let Err(e) = t.render_data(&mut body, &map) {
+            error!("failed to render body from template, err = {:?}", e);
+        }
+    }
+
+    let mut new_mail = Individual::default();
+    let uuid1 = "d:mail_".to_owned() + &Uuid::new_v4().to_string();
+    new_mail.set_id(&uuid1);
+    new_mail.add_uri("rdf:type", "v-s:Email");
+    new_mail.add_string("v-s:recipientMailbox", mailbox, Lang::none());
+    new_mail.add_datetime("v-s:created", now);
+    new_mail.add_uri("v-s:creator", "cfg:VedaSystemAppointment");
+    new_mail.add_uri("v-wf:from", "cfg:VedaSystemAppointment");
+    new_mail.add_string("v-s:subject", from_utf8(subject.as_slice()).unwrap_or_default(), Lang::none());
+    new_mail.add_string("v-s:messageBody", from_utf8(body.as_slice()).unwrap_or_default(), Lang::none());
+
+    let res = backend.mstorage_api.update(sys_ticket, IndvOp::Put, &new_mail);
+    if res.result != ResultCode::Ok {
+        error!("failed to store email, id = {}", new_mail.get_id());
+        ResultCode::AuthenticationFailed
+    } else {
+        info!("sent email {} to mailbox {}", new_mail.get_id(), mailbox);
+        ResultCode::Ok
+    }
 }
