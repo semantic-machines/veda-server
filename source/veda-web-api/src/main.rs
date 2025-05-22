@@ -88,7 +88,7 @@ async fn apps_doc(info: web::Path<Info>) -> std::io::Result<NamedFile> {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
+    unsafe { std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info"); }
     let module_name = "WEB_API";
     init_log_with_params(module_name, None, true);
     info!("{} {} {}", module_name, version!(), git_version!());

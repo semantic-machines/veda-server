@@ -14,9 +14,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::common::c_load_onto;
-use v_common::onto::individual::Individual;
-use v_common::onto::json2individual::parse_json_to_individual;
-use v_common::onto::onto_index::OntoIndex;
 use v_common::search::clickhouse_client::CHClient;
 use v_common::search::common::{load_prefixes, AuthorizationLevel, FTQuery, PrefixesCache, QueryResult, ResultFormat};
 use v_common::search::sparql_client::SparqlClient;
@@ -24,6 +21,9 @@ use v_common::search::sparql_params::prepare_sparql_params;
 use v_common::search::sql_params::parse_sql_query_arguments;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::obj::{OptAuthorize, ResultCode};
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::json2individual::parse_json_to_individual;
+use v_individual_model::onto::onto_index::OntoIndex;
 
 pub(crate) struct QueryEndpoints {
     pub vql_client: Mutex<VQLClient>,

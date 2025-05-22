@@ -16,13 +16,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::ticket::Ticket;
-use v_common::onto::individual::Individual;
-use v_common::onto::parser::parse_raw;
 use v_common::search::ft_client::FTClient;
 use v_common::storage::async_storage::{get_individual_from_db, get_individual_use_storage_id, AStorage, TICKETS_SPACE_ID};
 use v_common::storage::common::{Storage, StorageId, StorageMode};
 use v_common::storage::lmdb_storage::LMDBStorage;
 use v_common::v_api::obj::ResultCode;
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::parser::parse_raw;
 
 pub(crate) const LIMITATA_COGNOSCI: &[&str] = &["v-s:Credential", "v-s:Connection", "v-s:LinkedNode"];
 pub(crate) const BASE_PATH: &str = "./data";

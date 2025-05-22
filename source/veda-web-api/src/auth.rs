@@ -14,12 +14,12 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
-use v_common::onto::datatype::Lang;
-use v_common::onto::individual::Individual;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::AuthClient;
 use v_common::v_api::obj::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext, Trace, ACCESS_8_LIST, ACCESS_PREDICATE_LIST};
+use v_individual_model::onto::datatype::Lang;
+use v_individual_model::onto::individual::Individual;
 
 #[get("get_ticket_trusted")]
 pub(crate) async fn get_ticket_trusted(

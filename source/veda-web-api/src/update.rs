@@ -11,11 +11,11 @@ use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use v_common::onto::individual::Individual;
-use v_common::onto::json2individual::parse_json_to_individual;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
 use v_common::v_api::obj::ResultCode;
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::json2individual::parse_json_to_individual;
 
 pub(crate) async fn update(
     action: &str,
@@ -63,6 +63,9 @@ pub(crate) async fn update(
                     let mut new_indv = Individual::default();
                     if parse_json_to_individual(ji, &mut new_indv) && !new_indv.get_id().is_empty() {
                         inds.push(new_indv);
+                    } else {
+                        log(Some(&start_time), &uinf, action, &ji.to_string(), ResultCode::BadRequest);
+                        return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::BadRequest as u16).unwrap()));    
                     }
                 }
             }

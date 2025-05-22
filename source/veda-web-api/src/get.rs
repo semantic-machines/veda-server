@@ -14,11 +14,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::info::ModuleInfo;
-use v_common::onto::individual::Individual;
 use v_common::storage::async_storage::{check_user_in_group, get_individual_from_db, AStorage};
 use v_common::v_api::obj::ResultCode;
 use v_common::v_queue::consumer::Consumer;
 use v_common::v_queue::record::Mode;
+use v_individual_model::onto::individual::Individual;
 
 pub const SUPER_USER_GROUP: &str = "cfg:SuperUser";
 

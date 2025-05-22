@@ -24,12 +24,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
-use v_common::onto::datatype::Lang;
-use v_common::onto::individual::Individual;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
 use v_common::v_api::obj::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext};
+use v_individual_model::onto::datatype::Lang;
+use v_individual_model::onto::individual::Individual;
 
 const FILE_BASE_PATH: &str = "./data/files";
 const LOCK_TIMEOUT: i64 = 3600;
