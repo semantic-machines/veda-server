@@ -100,8 +100,13 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
 
     let mut backend = Backend::create(StorageMode::ReadOnly, false);
 
+    while !backend.fts.connect() {
+        error!("failed to connect to ft-query module, sleep and repeat...");
+        thread::sleep(time::Duration::from_millis(1000));
+    }
+    
     while !backend.mstorage_api.connect() {
-        error!("failed to connect to main module, sleep and repeat");
+        error!("failed to connect to main module, sleep and repeat...");
         thread::sleep(time::Duration::from_millis(1000));
     }
 
