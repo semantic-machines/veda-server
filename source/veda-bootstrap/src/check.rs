@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::common::{is_ok_process, log_err_and_to_tg, start_module, stop_process, ModuleError};
+use crate::common::{is_ok_process, log_err_and_to_tg, start_module, stop_process, ModuleError, RestartReason};
 use chrono::prelude::*;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -22,7 +22,9 @@ impl App {
             let (mut is_ok, memory) = is_ok_process(&mut sys, process.id());
 
             if !mstorage_ready && stop_process(process.id() as i32, name) {
+                let restart_reason = RestartReason::MstorageNotReady;
                 warn!("mstorage not ready, attempt stop module {} {}", process.id(), name);
+                log_err_and_to_tg(&tg, &restart_reason.to_telegram_message(name)).await;
                 is_ok = false;
             }
 
@@ -35,9 +37,11 @@ impl App {
                 };
 
                 if exit_code != ModuleError::Fatal as i32 {
+                    let restart_reason = RestartReason::ProcessDead(exit_code);
+                    
                     if let Some(module) = self.modules_info.get(name) {
                         if *module.prev_err.as_ref().unwrap_or(&ModuleError::Fatal) != ModuleError::MemoryLimit {
-                            log_err_and_to_tg(&tg, &format!("found dead module {}, restart this", name)).await;
+                            log_err_and_to_tg(&tg, &restart_reason.to_telegram_message(name)).await;
                         }
                     }
 
@@ -50,13 +54,14 @@ impl App {
                                 info!("{} restart module {}, {}, {:?}", child.id(), module.alias_name, module.exec_name, module.args);
                                 *process = child;
                                 need_check = false;
+                                log_err_and_to_tg(&tg, &restart_reason.to_success_message(name)).await;
                             },
                             Err(e) => {
-                                log_err_and_to_tg(&tg, &format!("failed to execute, name = {}, err = {:?}", module.exec_name, e)).await;
+                                log_err_and_to_tg(&tg, &format!("❌ Failed to restart module {}: {:?}", name, e)).await;
                             },
                         }
                     } else {
-                        log_err_and_to_tg(&tg, &format!("failed to find module, name = {}", name)).await;
+                        log_err_and_to_tg(&tg, &format!("❌ Failed to find module {} for restart", name)).await;
                     }
                 }
             }
@@ -65,7 +70,9 @@ impl App {
                 if need_check {
                     if let Some(memory_limit) = module.memory_limit {
                         if memory > memory_limit {
+                            let restart_reason = RestartReason::MemoryLimit(memory, memory_limit);
                             warn!("process = {}, memory = {} KiB, limit = {} KiB", name, memory, memory_limit);
+                            log_err_and_to_tg(&tg, &restart_reason.to_telegram_message(name)).await;
                             stop_process(process.id() as i32, name);
                             module.prev_err = Some(ModuleError::MemoryLimit);
                         }
@@ -86,9 +93,11 @@ impl App {
                         if let Some(m) = &module.module_info {
                             if let Ok(tm) = m.read_modified() {
                                 if tm + Duration::from_secs(timeout) < SystemTime::now() {
+                                    let restart_reason = RestartReason::WatchdogTimeout;
                                     let now: DateTime<Utc> = SystemTime::now().into();
                                     let a: DateTime<Utc> = (tm + Duration::from_secs(timeout)).into();
                                     warn!("watchdog: modified + timeout ={},  now={}", a.format("%d/%m/%Y %T"), now.format("%d/%m/%Y %T"));
+                                    log_err_and_to_tg(&tg, &restart_reason.to_telegram_message(name)).await;
                                     stop_process(process.id() as i32, name);
                                 }
                             }
@@ -96,10 +105,13 @@ impl App {
                     }
                 }
             } else {
+                let restart_reason = RestartReason::ConfigurationRemoved;
                 info!("process {} does not exist in the configuration, it will be killed", name);
+                log_err_and_to_tg(&tg, &restart_reason.to_telegram_message(name)).await;
                 stop_process(process.id() as i32, name);
                 let (is_run, _mem) = is_ok_process(&mut sys,process.id());
                 if !is_run {
+                    log_err_and_to_tg(&tg, &restart_reason.to_success_message(name)).await;
                     *name = String::new();
                 }
             }

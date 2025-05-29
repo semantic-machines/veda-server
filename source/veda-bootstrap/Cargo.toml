@@ -1,12 +1,12 @@
 [package]
 name = "veda-bootstrap"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["itiu <ValeriyBushenev@gmail.com>"]
 edition = "2021"
 
 [dependencies]
 log = "0.4"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 env_logger = "0.9"
 sysinfo = "0.18"
 parse_duration = "2.1.1"
@@ -16,7 +16,11 @@ reqwest = "0.11"
 futures = "0.3.5"
 tokio = { version =  "1.8", features = ["rt-multi-thread", "macros"] }
 rust-ini = "0.18"
+v_queue = "0.2.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
-v_common = { package = "v-common", version = "=0.10.6" }
-#v_common = { package = "v-common", path = "../../../v-common" }
+#v_common = { package = "v-common", path = "../../../v-common", features = ["tokio_0_2", "tt_2", "awc_2"]}
+v_common = { package = "v-common", version = "=0.13.6", features = ["tokio_0_2", "tt_2", "awc_2"] }
+v-individual-model = "0.1.1"
 

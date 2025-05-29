@@ -14,6 +14,7 @@ use sysinfo::{get_current_pid, ProcessExt, SystemExt};
 mod app;
 mod check;
 mod common;
+mod queue_check;
 
 #[tokio::main]
 async fn main() {

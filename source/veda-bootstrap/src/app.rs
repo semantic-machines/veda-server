@@ -1,4 +1,4 @@
-use crate::common::{auth_watchdog_check, is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, stop_process, TelegramDest, VedaModule};
+use crate::common::{auth_watchdog_check, is_ok_process, log_err_and_to_tg, mstorage_watchdog_check, start_module, stop_process, TelegramDest, VedaModule, RestartReason};
 use chrono::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -13,6 +13,7 @@ use std::{fs, io, thread, time};
 use sysinfo::SystemExt;
 use v_common::module::module_impl::Module;
 use v_common::module::veda_backend::Backend;
+use crate::queue_check::{QueueChecker};
 
 pub struct App {
     pub(crate) name: String,
@@ -114,7 +115,7 @@ impl App {
         module_check_results: &mut HashMap<String, bool>,
     ) {
         for (module_name, period) in watchdog_check_periods {
-            let now = Utc::now().naive_utc().timestamp();
+            let now = Utc::now().timestamp();
             if now - *prev_check_times.get(module_name).unwrap_or(&now) > period.as_secs() as i64 {
                 prev_check_times.insert(module_name.to_string(), now);
 
@@ -129,7 +130,8 @@ impl App {
                 if let Some(c) = check_result {
                     module_check_results.insert(module_name.to_string(), c);
                     if !c {
-                        log_err_and_to_tg(&self.tg, &format!("detected a problem in module {}, restart it", module_name)).await;
+                        let restart_reason = RestartReason::PingFailed(module_name.clone());
+                        log_err_and_to_tg(&self.tg, &restart_reason.to_telegram_message(module_name)).await;
                     }
                 }
             }
@@ -138,7 +140,6 @@ impl App {
         for (module_name, process) in self.started_modules.iter_mut() {
             if let Some(r) = module_check_results.get(&module_name.to_string()) {
                 if !r {
-                    log_err_and_to_tg(&self.tg, &format!("fail ping to module {}, restart it", module_name)).await;
                     let mut sys = sysinfo::System::new();
                     sys.refresh_processes();
                     stop_process(process.id() as i32, module_name);
@@ -159,6 +160,44 @@ impl App {
                     Err(e) => {
                         log_err_and_to_tg(&self.tg, &format!("failed to execute, name = {}, err = {:?}", module.exec_name, e)).await;
                     },
+                }
+            }
+        }
+    }
+
+    // Проверка на зависшие модули на основе анализа очередей
+    async fn check_stuck_modules_by_queue_analysis(&mut self, sys: &mut sysinfo::System) {
+        let mut queue_checker = QueueChecker::new(
+            "./data/queue".to_string(),
+            "./data/queue_stats.json".to_string()
+        );
+        
+        let tg_dest = self.get_tg_dest();
+        
+        for (name, process) in self.started_modules.iter_mut() {
+            if let Some(module) = self.modules_info.get_mut(name) {
+                // Сначала проверяем состояние очереди конкретного модуля
+                let queue_status = queue_checker.check_single_module_queue_status(module, &tg_dest).await;
+                
+                // Затем проверяем на зависание, используя полученные данные
+                if QueueChecker::check_module_stuck(module, process.id(), sys, queue_status, &tg_dest).await {
+                    let restart_reason = RestartReason::QueueStuck;
+                    log_err_and_to_tg(&tg_dest, &restart_reason.to_telegram_message(name)).await;
+                    
+                    // Останавливаем зависший процесс
+                    stop_process(process.id() as i32, name);
+                    
+                    // Пытаемся перезапустить модуль
+                    match start_module(module).await {
+                        Ok(child) => {
+                            info!("{} restart stuck module {}, {}", child.id(), module.alias_name, module.exec_name);
+                            *process = child;
+                            log_err_and_to_tg(&tg_dest, &restart_reason.to_success_message(name)).await;
+                        },
+                        Err(e) => {
+                            log_err_and_to_tg(&tg_dest, &format!("❌ Failed to restart stuck module {}: {:?}", name, e)).await;
+                        },
+                    }
                 }
             }
         }
@@ -191,6 +230,13 @@ impl App {
             self.check_started_processes(mstorage_ready, &mut new_config_modules).await;
 
             self.start_new_modules_from_config(&new_config_modules).await;
+
+            // Проверяем на зависшие модули через анализ очередей (только если mstorage готов)
+            if mstorage_ready {
+                let mut sys = sysinfo::System::new();
+                sys.refresh_processes();
+                self.check_stuck_modules_by_queue_analysis(&mut sys).await;
+            }
 
             thread::sleep(time::Duration::from_millis(10000));
         }
@@ -264,6 +310,8 @@ impl App {
                     module_info: None,
                     module_name: String::new(),
                     prev_err: None,
+                    queue_check_enabled: false,
+                    queue_check_period: None,
                 };
                 order += 1;
 
@@ -305,6 +353,22 @@ impl App {
 
                     if module.watchdog_timeout.is_none() {
                         error!("failed to parse param [watchdog_timeout]");
+                    }
+                }
+
+                if let Some(m) = params.get("queue-check") {
+                    module.queue_check_enabled = m.to_lowercase() == "true" || m == "1";
+                    if module.queue_check_enabled {
+                        info!("queue check enabled for module {}", module.alias_name);
+                    }
+                }
+
+                if let Some(m) = params.get("queue-check-period") {
+                    if let Ok(period) = parse_duration::parse(m) {
+                        module.queue_check_period = Some(period);
+                        info!("queue check period for module {} set to {}", module.alias_name, m);
+                    } else {
+                        error!("failed to parse queue-check-period '{}' for module {}", m, module.alias_name);
                     }
                 }
 
@@ -361,7 +425,7 @@ fn initialize_watchdog_data() -> (HashMap<String, Duration>, HashMap<String, i64
         if let Some(p) = Module::get_property::<String>(&format!("{}_watchdog_period", n)) {
             if let Ok(t) = parse_duration::parse(&p) {
                 watchdog_check_periods.insert(n.to_string(), t);
-                prev_check_times.insert(n.to_string(), Utc::now().naive_utc().timestamp());
+                prev_check_times.insert(n.to_string(), Utc::now().timestamp());
                 info!("started {} watchdog, period = {}", n, p);
             }
         }

@@ -14,9 +14,9 @@ use sysinfo::{ProcessExt, ProcessStatus, SystemExt};
 use teloxide::prelude::*;
 use teloxide::types::Recipient;
 use v_common::module::info::ModuleInfo;
-use v_common::onto::individual::Individual;
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::ResultCode;
+use v_individual_model::onto::individual::Individual;
 
 pub const MSTORAGE_ID: i64 = 1;
 
@@ -25,6 +25,72 @@ pub const MSTORAGE_ID: i64 = 1;
 pub enum ModuleError {
     Fatal = 101,
     MemoryLimit = 102,
+}
+
+// Причины перезапуска модулей для уведомлений в Telegram
+#[derive(Debug, Clone)]
+pub enum RestartReason {
+    ProcessDead(i32),           // Процесс умер, код выхода
+    MemoryLimit(u64, u64),      // Превышен лимит памяти (текущая, лимит)
+    WatchdogTimeout,            // Превышен таймаут watchdog
+    QueueStuck,                 // Зависание по анализу очередей
+    PingFailed(String),         // Не отвечает на ping (модуль)
+    MstorageNotReady,           // Модуль mstorage не готов
+    ConfigurationRemoved,       // Модуль удален из конфигурации
+}
+
+impl RestartReason {
+    pub fn to_telegram_message(&self, module_name: &str) -> String {
+        match self {
+            RestartReason::ProcessDead(exit_code) => {
+                format!("🔄 Restarting module {} — process exited (code: {})", module_name, exit_code)
+            },
+            RestartReason::MemoryLimit(current, limit) => {
+                format!("🔄 Restarting module {} — memory limit exceeded ({} KiB > {} KiB)", module_name, current, limit)
+            },
+            RestartReason::WatchdogTimeout => {
+                format!("🔄 Restarting module {} — watchdog timeout exceeded", module_name)
+            },
+            RestartReason::QueueStuck => {
+                format!("🔄 Restarting module {} — stuck by queue analysis", module_name)
+            },
+            RestartReason::PingFailed(module) => {
+                format!("🔄 Restarting module {} — ping failed ({})", module_name, module)
+            },
+            RestartReason::MstorageNotReady => {
+                format!("🔄 Restarting module {} — mstorage not ready", module_name)
+            },
+            RestartReason::ConfigurationRemoved => {
+                format!("🛑 Stopping module {} — removed from configuration", module_name)
+            },
+        }
+    }
+
+    pub fn to_success_message(&self, module_name: &str) -> String {
+        match self {
+            RestartReason::ProcessDead(_) => {
+                format!("✅ Module {} successfully restarted after process exit", module_name)
+            },
+            RestartReason::MemoryLimit(_, _) => {
+                format!("✅ Module {} successfully restarted after memory limit exceeded", module_name)
+            },
+            RestartReason::WatchdogTimeout => {
+                format!("✅ Module {} successfully restarted after watchdog timeout", module_name)
+            },
+            RestartReason::QueueStuck => {
+                format!("✅ Module {} successfully restarted after queue stuck", module_name)
+            },
+            RestartReason::PingFailed(_) => {
+                format!("✅ Module {} successfully restarted after ping failure", module_name)
+            },
+            RestartReason::MstorageNotReady => {
+                format!("✅ Module {} successfully restarted after mstorage recovery", module_name)
+            },
+            RestartReason::ConfigurationRemoved => {
+                format!("✅ Module {} successfully stopped", module_name)
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -38,6 +104,8 @@ pub struct VedaModule {
     pub(crate) watchdog_timeout: Option<u64>,
     pub(crate) module_info: Option<ModuleInfo>,
     pub(crate) prev_err: Option<ModuleError>,
+    pub(crate) queue_check_enabled: bool,
+    pub(crate) queue_check_period: Option<std::time::Duration>,
 }
 
 #[derive(Clone)]
