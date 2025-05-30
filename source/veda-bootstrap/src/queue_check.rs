@@ -154,15 +154,22 @@ impl QueueChecker {
                 if pushed_diff > 0 && popped_diff == 0 {
                     let current_queue_size = queue_status.current_pushed.saturating_sub(queue_status.current_popped);
                     
+                    // Получаем период проверки для отображения в сообщениях
+                    let period_str = if let Some(period) = module.queue_check_period {
+                        format!("{:?}", period)
+                    } else {
+                        "5m".to_string()
+                    };
+                    
                     warn!(
-                        "Модуль {} (PID: {}, part {}/{}) may be stuck! For period: added +{}, processed +0, queue size: {}",
-                        module.alias_name, process_id, queue_status.queue_part_id, queue_status.consumer_part_id, pushed_diff, current_queue_size
+                        "Module {} (PID: {}, part {}/{}) may be stuck! For {}: added +{}, processed +0, queue size: {}",
+                        module.alias_name, process_id, queue_status.queue_part_id, queue_status.consumer_part_id, period_str, pushed_diff, current_queue_size
                     );
 
                     if let Some(tg) = tg_dest {
                         log_err_and_to_tg(&Some(tg.clone()), &format!(
-                            "🚨 Module {} (PID: {}) stuck! Added: +{}, processed: 0, queue size: {}",
-                            module.alias_name, process_id, pushed_diff, current_queue_size
+                            "🚨 Module {} (PID: {}) stuck! Added: +{}, processed: 0 in {}, queue size: {}",
+                            module.alias_name, process_id, pushed_diff, period_str, current_queue_size
                         )).await;
                     }
 
@@ -249,19 +256,34 @@ impl QueueChecker {
                                 let popped_diff = current_popped.saturating_sub(prev_popped);
                                 let queue_growth = pushed_diff.saturating_sub(popped_diff);
                                 
-                                // Предупреждение если очередь растет
+                                // Предупреждение только при критически быстром росте очереди
+                                // Критерии настраиваются через параметры модуля
                                 if queue_growth > 0 {
                                     let current_queue_size = current_pushed.saturating_sub(current_popped);
-                                    warn!(
-                                        "Queue of module {} (part {}/{}) growing! Current size: {}, growth for period: +{}",
-                                        module.alias_name, queue_part_id, consumer_part_id, current_queue_size, queue_growth
-                                    );
+                                    let is_critical_growth = queue_growth > module.queue_growth_threshold || 
+                                        (current_queue_size > 0 && queue_growth * 100 / current_queue_size > module.queue_growth_percentage);
                                     
-                                    if let Some(tg) = tg_dest {
-                                        log_err_and_to_tg(&Some(tg.clone()), &format!(
-                                            "⚠️ Queue of module {} (part {}/{}) growing! Size: {}, growth: +{}",
-                                            module.alias_name, queue_part_id, consumer_part_id, current_queue_size, queue_growth
-                                        )).await;
+                                    if is_critical_growth {
+                                        // Получаем период проверки для отображения в сообщениях
+                                        let period_str = if let Some(period) = module.queue_check_period {
+                                            format!("{:?}", period)
+                                        } else {
+                                            "5m".to_string()
+                                        };
+                                        
+                                        warn!(
+                                            "Queue of module {} (part {}/{}) growing rapidly! Current size: {}, growth: +{} in {} (threshold: {}, percentage: {}%)",
+                                            module.alias_name, queue_part_id, consumer_part_id, current_queue_size, queue_growth, period_str,
+                                            module.queue_growth_threshold, module.queue_growth_percentage
+                                        );
+                                        
+                                        if let Some(tg) = tg_dest {
+                                            log_err_and_to_tg(&Some(tg.clone()), &format!(
+                                                "⚠️ Queue of module {} growing rapidly! Size: {}, growth: +{} in {} (threshold: {} tasks or {}%)",
+                                                module.alias_name, current_queue_size, queue_growth, period_str,
+                                                module.queue_growth_threshold, module.queue_growth_percentage
+                                            )).await;
+                                        }
                                     }
                                 }
                             }

@@ -312,6 +312,8 @@ impl App {
                     prev_err: None,
                     queue_check_enabled: false,
                     queue_check_period: None,
+                    queue_growth_threshold: 50,     // По умолчанию 50 задач
+                    queue_growth_percentage: 20,    // По умолчанию 20%
                 };
                 order += 1;
 
@@ -369,6 +371,28 @@ impl App {
                         info!("queue check period for module {} set to {}", module.alias_name, m);
                     } else {
                         error!("failed to parse queue-check-period '{}' for module {}", m, module.alias_name);
+                    }
+                }
+
+                if let Some(m) = params.get("queue-growth-threshold") {
+                    if let Ok(threshold) = m.parse::<u32>() {
+                        module.queue_growth_threshold = threshold;
+                        info!("queue growth threshold for module {} set to {}", module.alias_name, threshold);
+                    } else {
+                        error!("failed to parse queue-growth-threshold '{}' for module {}", m, module.alias_name);
+                    }
+                }
+
+                if let Some(m) = params.get("queue-growth-percentage") {
+                    if let Ok(percentage) = m.parse::<u32>() {
+                        if percentage > 0 && percentage <= 100 {
+                            module.queue_growth_percentage = percentage;
+                            info!("queue growth percentage for module {} set to {}%", module.alias_name, percentage);
+                        } else {
+                            error!("queue-growth-percentage must be between 1 and 100, got '{}' for module {}", m, module.alias_name);
+                        }
+                    } else {
+                        error!("failed to parse queue-growth-percentage '{}' for module {}", m, module.alias_name);
                     }
                 }
 

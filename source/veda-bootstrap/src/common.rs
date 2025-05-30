@@ -106,6 +106,8 @@ pub struct VedaModule {
     pub(crate) prev_err: Option<ModuleError>,
     pub(crate) queue_check_enabled: bool,
     pub(crate) queue_check_period: Option<std::time::Duration>,
+    pub(crate) queue_growth_threshold: u32,        // Абсолютный порог роста (задач за период)
+    pub(crate) queue_growth_percentage: u32,       // Процентный порог роста (% от размера очереди)
 }
 
 #[derive(Clone)]
