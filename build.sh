@@ -1,3 +1,5 @@
+rustup override set 1.88
+
 build_server_module () {
     BUILD_PATH=$PWD
     VEDA_BIN=$BUILD_PATH/bin

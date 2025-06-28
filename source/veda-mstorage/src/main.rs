@@ -19,10 +19,10 @@ use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::ticket::Ticket;
 use v_common::module::veda_backend::{get_storage_use_prop, indv_apply_cmd};
-use v_common::onto::individual::{Individual, RawObj};
-use v_common::onto::individual2msgpack::to_msgpack;
-use v_common::onto::json2individual::parse_json_to_individual;
-use v_common::onto::parser::parse_raw;
+use v_individual_model::onto::individual::{Individual, RawObj};
+use v_individual_model::onto::individual2msgpack::to_msgpack;
+use v_individual_model::onto::json2individual::parse_json_to_individual;
+use v_individual_model::onto::parser::parse_raw;
 use v_common::storage::common::{StorageId, StorageMode, VStorage};
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::*;
@@ -465,7 +465,7 @@ fn operation_prepare(cmd: IndvOp, op_id: &mut i64, new_indv: &mut Individual, sy
     // If the command is Put and created datetime property is not present,
     // add the datetime property to the new individual object
     if cmd == IndvOp::Put && !new_indv.is_exists("v-s:created") {
-        new_indv.add_datetime("v-s:created", Utc::now().naive_utc().timestamp());
+        new_indv.add_datetime("v-s:created", Utc::now().naive_utc().and_utc().timestamp());
     }
 
     if cmd == IndvOp::Remove {

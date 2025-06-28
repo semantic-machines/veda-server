@@ -2,9 +2,9 @@
 use chrono::Utc;
 use v_common::module::info::ModuleInfo;
 use v_common::module::ticket::Ticket;
-use v_common::onto::datatype::Lang;
-use v_common::onto::individual::Individual;
-use v_common::onto::individual2msgpack::to_msgpack;
+use v_individual_model::onto::datatype::Lang;
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::individual2msgpack::to_msgpack;
 use v_common::storage::common::{StorageId, VStorage};
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::ResultCode;
@@ -130,7 +130,7 @@ impl<'a> Transaction<'a> {
                     "?"
                 };
                 queue_element.set_string("src", src, Lang::none());
-                queue_element.add_datetime("date", Utc::now().naive_utc().timestamp());
+                queue_element.add_datetime("date", Utc::now().naive_utc().and_utc().timestamp());
                 queue_element.add_integer("op_id", op_id);
                 queue_element.add_integer("u_count", el.update_counter);
 
