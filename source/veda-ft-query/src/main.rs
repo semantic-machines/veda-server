@@ -54,9 +54,22 @@ fn main() {
         error!("failed to store info, err = {:?}", e);
     }
 
-    let mut module = Backend::default();
+    let mut backend = Backend::default();
 
-    if let Some(mut xr) = XapianReader::new("russian", &mut module.storage) {
+    let w_sys_ticket = backend.get_sys_ticket_id();
+    if w_sys_ticket.is_err() {
+        error!("failed to get system ticket");
+        exit(0);
+    }
+    let sys_ticket = w_sys_ticket.unwrap();
+    let ticket = backend.get_ticket_from_db(&sys_ticket);
+    if ticket.result != ResultCode::Ok {
+        error!("failed load sys ticket {}", sys_ticket);
+        exit(0);
+    }
+    let sys_user_uri = ticket.user_uri;
+
+    if let Some(mut xr) = XapianReader::new("russian", &mut backend.storage) {
         let mut start = Instant::now();
 
         loop {
@@ -92,7 +105,7 @@ fn main() {
 
                         let out_msg = if let Ok(s) = str::from_utf8(recv_msg.as_slice()) {
                             if s.len() > 2 {
-                                req_prepare(&mut module, s, &mut xr)
+                                req_prepare(&mut backend, s, &mut xr, &sys_user_uri)
                             } else {
                                 Message::from("[]".as_bytes())
                             }
@@ -133,7 +146,7 @@ const TOP: usize = 5;
 const LIMIT: usize = 6;
 const FROM: usize = 7;
 
-fn req_prepare(backend: &mut Backend, s: &str, xr: &mut XapianReader) -> Message {
+fn req_prepare(backend: &mut Backend, s: &str, xr: &mut XapianReader, sys_user_uri: &str) -> Message {
     let v: JSONValue = if let Ok(v) = serde_json::from_slice(s.as_bytes()) {
         v
     } else {
@@ -173,7 +186,13 @@ fn req_prepare(backend: &mut Backend, s: &str, xr: &mut XapianReader) -> Message
         fn add_out_element(id: &str, ctx: &mut Vec<String>) {
             ctx.push(id.to_owned());
         }
-
+        
+        let need_authorize = if sys_user_uri == user_uri {
+            OptAuthorize::NO
+        } else {
+            OptAuthorize::YES
+        };
+        
         let request = FTQuery {
             ticket: "".to_string(),
             user: user_uri,
@@ -185,10 +204,10 @@ fn req_prepare(backend: &mut Backend, s: &str, xr: &mut XapianReader) -> Message
             limit,
             from,
         };
-
+        
         info!(
-            "ticket = {}, user = {}, query = {}, sort = {}, db = {}, top = {}, limit = {}, from = {}",
-            ticket_id, request.user, request.query, request.sort, request.databases, request.top, request.limit, request.from
+            "{:?}, ticket = {}, user = {}, query = {}, sort = {}, db = {}, top = {}, limit = {}, from = {}",
+            need_authorize, ticket_id, request.user, request.query, request.sort, request.databases, request.top, request.limit, request.from
         );
 
         if let Some(t) = OntoIndex::get_modified() {
@@ -200,8 +219,8 @@ fn req_prepare(backend: &mut Backend, s: &str, xr: &mut XapianReader) -> Message
         if xr.index_schema.is_empty() {
             xr.load_index_schema(&mut backend.storage);
         }
-
-        match block_on(xr.query_use_collect_fn(&request, add_out_element, OptAuthorize::YES, &mut ctx)) {
+        
+        match block_on(xr.query_use_collect_fn(&request, add_out_element, need_authorize, &mut ctx)) {
             Ok(mut res) => {
                 res.result = ctx;
                 info!("count = {}, time: query = {}, authorize = {}, total = {}", res.count, res.query_time, res.authorize_time, res.total_time);
