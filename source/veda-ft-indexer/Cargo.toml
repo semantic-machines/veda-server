@@ -17,3 +17,6 @@ xapian-rusty = "=0.0.55"
 
 v_common = { package = "v-common", version = "=0.10.6" }
 #v_common = { package = "v-common", path = "../../../v-common" }
+
+[profile.release]
+opt-level = 1
