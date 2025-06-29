@@ -9,7 +9,7 @@ use nng::{Error, Message, Protocol, Socket};
 use serde_json::value::Value as JSONValue;
 use std::process::exit;
 use std::time::{Duration, Instant};
-use std::{env, str};
+use std::{env, str, thread};
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::init_module_log;
 use v_common::module::common::load_onto;
@@ -35,36 +35,51 @@ fn main() {
         if el.starts_with("--bind") {
             let p: Vec<&str> = el.split('=').collect();
             query_url = p[1].to_owned().trim().to_owned();
-            info!("use arg [bind] = {}", query_url);
+            info!("Using bind argument: {}", query_url);
         } else if el.starts_with("--module-name") {
             let p: Vec<&str> = el.split('=').collect();
             module_name = p[1].to_owned().trim().to_owned();
-            info!("use arg [module-name] = {}", module_name);
+            info!("Using module-name argument: {}", module_name);
         }
     }
 
     let module_info = ModuleInfo::new("./data", &module_name, true);
     if module_info.is_err() {
-        error!("failed to start, err = {:?}", module_info.err());
+        error!("Failed to initialize module: {:?}", module_info.err());
         exit(0);
     }
     let mut module_info = module_info.unwrap();
     let mut count = 0;
     if let Err(e) = module_info.put_info(count, count) {
-        error!("failed to store info, err = {:?}", e);
+        error!("Failed to store module info: {:?}", e);
     }
 
     let mut backend = Backend::default();
 
-    let w_sys_ticket = backend.get_sys_ticket_id();
+    let mut w_sys_ticket = Err(-1);
+    for attempt in 1..=5 {
+        w_sys_ticket = backend.get_sys_ticket_id();
+        if w_sys_ticket.is_ok() {
+            info!("System ticket obtained on attempt {}", attempt);
+            break;
+        }
+        
+        error!("Failed to get system ticket, attempt {}/5", attempt);
+        if attempt < 5 {
+            info!("Waiting {} seconds before next attempt", attempt);
+            thread::sleep(Duration::from_secs(attempt as u64));
+        }
+    }
+    
     if w_sys_ticket.is_err() {
-        error!("failed to get system ticket");
+        error!("Failed to get system ticket after 5 attempts");
         exit(0);
     }
+    
     let sys_ticket = w_sys_ticket.unwrap();
     let ticket = backend.get_ticket_from_db(&sys_ticket);
     if ticket.result != ResultCode::Ok {
-        error!("failed load sys ticket {}", sys_ticket);
+        error!("Failed to load system ticket: {}", sys_ticket);
         exit(0);
     }
     let sys_user_uri = ticket.user_uri;
@@ -73,28 +88,28 @@ fn main() {
         let mut start = Instant::now();
 
         loop {
-            info!("init");
+            info!("Initializing server socket");
             let server = Socket::new(Protocol::Rep0).unwrap();
 
             if let Err(e) = server.set_opt::<RecvTimeout>(Some(Duration::from_secs(TIMEOUT_RECV))) {
-                error!("failed to set recv timeout, url = {}, err = {}", query_url, e);
+                error!("Failed to set receive timeout for {}: {}", query_url, e);
                 return;
             }
             if let Err(e) = server.set_opt::<SendTimeout>(Some(Duration::from_secs(TIMEOUT_SEND))) {
-                error!("failed to set send timeout, url = {}, err = {}", query_url, e);
+                error!("Failed to set send timeout for {}: {}", query_url, e);
                 return;
             }
 
             if let Err(e) = server.listen(&query_url) {
-                error!("failed to listen, url = {}, err = {:?}", query_url, e);
+                error!("Failed to bind and listen on {}: {:?}", query_url, e);
                 return;
             }
 
-            info!("start listen {}", query_url);
+            info!("Server listening on {}", query_url);
             loop {
                 if start.elapsed().as_secs() > TIMEOUT_INFO {
                     if let Err(e) = module_info.put_info(count, count) {
-                        error!("failed to store info, err = {:?}", e);
+                        error!("Failed to update module statistics: {:?}", e);
                     }
                     start = Instant::now();
                 }
@@ -114,17 +129,17 @@ fn main() {
                         };
 
                         if let Err(e) = server.send(out_msg) {
-                            error!("failed to send answer, err = {:?}", e);
+                            error!("Failed to send response: {:?}", e);
                             break;
                         }
                     },
                     Err(e) => match e {
                         Error::TimedOut => {
-                            info!("receive timeout, total prepared requests: {}", count);
+                            info!("Receive timeout, total processed requests: {}", count);
                             break;
                         },
                         _ => {
-                            error!("failed to get request, err = {:?}", e);
+                            error!("Failed to receive request: {:?}", e);
                             break;
                         },
                     },
@@ -133,7 +148,7 @@ fn main() {
             server.close();
         }
     } else {
-        error!("failed to init ft-query");
+        error!("Failed to initialize full-text query engine");
     }
 }
 
