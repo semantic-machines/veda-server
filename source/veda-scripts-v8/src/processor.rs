@@ -158,7 +158,21 @@ pub fn prepare_for_js(ctx: &mut MyContext, queue_element: &mut Individual) -> Re
                 tnx.sys_ticket = ctx.sys_ticket.to_owned();
                 drop(sh_tnx);
 
+                // Логируем начало выполнения JavaScript
+                let execution_start = std::time::Instant::now();
+                //info!("JS execution start: {}, doc_id: {}", script_id, doc_id);
+                
                 compiled_script.run(&mut local_scope);
+                
+                // Логируем завершение выполнения JavaScript
+                let execution_duration = execution_start.elapsed();
+                //info!("JS execution completed: {}, duration: {:?}", script_id, execution_duration);
+                
+                // Предупреждение о долгом выполнении
+                if execution_duration.as_secs() > 10 {
+                    warn!("Long JS execution detected: {} took {:?}", script_id, execution_duration);
+                }
+                
                 ctx.count_exec += 1;
 
                 sh_tnx = G_TRANSACTION.lock().unwrap();

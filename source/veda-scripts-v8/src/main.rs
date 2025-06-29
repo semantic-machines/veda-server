@@ -118,7 +118,8 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
         error!("failed to get system ticket");
         return Ok(());
     }
-
+    let sys_ticket = w_sys_ticket.unwrap();
+    
     let mut vm_id = "";
     let args: Vec<String> = env::args().collect();
     for el in args.iter() {
@@ -152,7 +153,7 @@ fn main0<'a>(isolate: &'a mut Isolate) -> Result<(), i32> {
             workplace: ScriptsWorkPlace::new(isolate),
             onto,
             vm_id: "main".to_owned(),
-            sys_ticket: w_sys_ticket.unwrap(),
+            sys_ticket: sys_ticket,
             main_queue_cs: None,
             queue_name: consumer_name,
             count_exec: 0,
