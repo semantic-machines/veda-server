@@ -1,27 +1,27 @@
-use chrono::{NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use data_encoding::HEXLOWER;
+use mustache::MapBuilder;
 use parse_duration::parse;
 use regex::Regex;
 use ring::rand::SecureRandom;
 use ring::{digest, pbkdf2, rand};
 use std::net::IpAddr;
 use std::num::NonZeroU32;
+use std::str::from_utf8;
 use uuid::Uuid;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::module_impl::Module;
 use v_common::module::ticket::Ticket;
 use v_common::module::veda_backend::Backend;
-use v_common::onto::datatype::Lang;
-use v_common::onto::individual::Individual;
-use v_common::onto::individual2msgpack::to_msgpack;
 use v_common::search::common::{FTQuery, QueryResult};
 use v_common::storage::common::{StorageId, VStorage};
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::{OptAuthorize, ResultCode};
 use v_common::v_authorization::common::{AuthorizationContext, Trace};
-use mustache::MapBuilder;
-use std::str::from_utf8;
+use v_individual_model::onto::datatype::Lang;
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::individual2msgpack::to_msgpack;
 
 pub const EMPTY_SHA256_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 pub const ALLOW_TRUSTED_GROUP: &str = "cfg:TrustedAuthenticationUserGroup";
@@ -77,8 +77,8 @@ pub(crate) fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&
         ticket_obj.end_time = Utc::now().timestamp();
 
         if store(&ticket_obj.to_individual(), &mut backend.storage) {
-            let end_time_str = if let Some(end_time_naive) = NaiveDateTime::from_timestamp_opt(ticket_obj.end_time, 0) {
-                format!("{:?}", end_time_naive)
+            let end_time_str = if let Some(end_time_dt) = DateTime::from_timestamp(ticket_obj.end_time, 0) {
+                format!("{:?}", end_time_dt.naive_utc())
             } else {
                 error!("logout: fail update ticket {:?}, fail timestamp", ticket_obj.id);
                 ticket_obj.result = ResultCode::InternalServerError;
@@ -404,7 +404,11 @@ pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration
         ticket.start_time = (TICKS_TO_UNIX_EPOCH + now.timestamp_millis()) * 10_000;
         ticket.end_time = ticket.start_time + duration * 10_000_000;
 
-        let end_time_str = format!("{:?}", NaiveDateTime::from_timestamp((ticket.end_time / 10_000 - TICKS_TO_UNIX_EPOCH) / 1_000, 0));
+        let end_time_str = if let Some(end_time_dt) = DateTime::from_timestamp((ticket.end_time / 10_000 - TICKS_TO_UNIX_EPOCH) / 1_000, 0) {
+            format!("{:?}", end_time_dt.naive_utc())
+        } else {
+            "Invalid timestamp".to_string()
+        };
         info!("create new ticket {}, login={}, user={}, addr={}, start={}, end={}", ticket.id, ticket.user_login, ticket.user_uri, addr, start_time_str, end_time_str);
     } else {
         error!("fail store ticket {:?}", ticket)
@@ -455,7 +459,7 @@ pub(crate) fn send_notification_email(
         return ResultCode::AuthenticationFailed;
     }
 
-    let now = Utc::now().naive_utc().timestamp();
+    let now = Utc::now().timestamp();
     let app_name = match backend.get_individual_s("v-s:vedaInfo") {
         Some(mut app_info) => {
             app_info.parse_all();
@@ -464,9 +468,7 @@ pub(crate) fn send_notification_email(
         None => "Veda".to_string(),
     };
 
-    let mut map_builder = MapBuilder::new()
-        .insert_str("app_name", app_name)
-        .insert_str("user_name", user_name);
+    let mut map_builder = MapBuilder::new().insert_str("app_name", app_name).insert_str("user_name", user_name);
 
     if let Some(code) = secret_code {
         map_builder = map_builder.insert_str("secret_code", code);
@@ -475,7 +477,7 @@ pub(crate) fn send_notification_email(
     let map = map_builder.build();
 
     let (subject_t_str, body_t_str) = template;
-    
+
     let mut subject = vec![];
     if let Ok(t) = mustache::compile_str(subject_t_str) {
         if let Err(e) = t.render_data(&mut subject, &map) {

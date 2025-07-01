@@ -1,20 +1,20 @@
-use crate::common::{create_new_credential, create_new_ticket, get_candidate_users_of_login, remove_secret, send_notification_email, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH, N_ITER};
+use crate::common::{
+    create_new_credential, create_new_ticket, get_candidate_users_of_login, remove_secret, send_notification_email, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH,
+    N_ITER,
+};
 use chrono::Utc;
 use data_encoding::HEXLOWER;
-use mustache::MapBuilder;
 use rand::{thread_rng, Rng};
 use ring::pbkdf2;
 use std::num::NonZeroU32;
-use std::str::from_utf8;
-use uuid::Uuid;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::ticket::Ticket;
 use v_common::module::veda_backend::Backend;
-use v_common::onto::datatype::Lang;
-use v_common::onto::individual::Individual;
 use v_common::storage::common::VStorage;
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_api::obj::ResultCode;
+use v_individual_model::onto::datatype::Lang;
+use v_individual_model::onto::individual::Individual;
 
 pub(crate) struct AuthWorkPlace<'a> {
     pub conf: &'a AuthConf,
@@ -134,7 +134,7 @@ impl<'a> AuthWorkPlace<'a> {
                         (true, ResultCode::Ok)
                     };
                 } else {
-                    let now = Utc::now().naive_utc().timestamp();
+                    let now = Utc::now().timestamp();
 
                     let is_request_new_password = if self.secret == "?" {
                         warn!("request for new password, user = {}", account.get_id());
@@ -186,7 +186,7 @@ impl<'a> AuthWorkPlace<'a> {
 
     fn prepare_secret_code(&mut self, ticket: &mut Ticket, person: &Individual) -> ResultCode {
         let old_secret = self.credential.get_first_literal("v-s:secret").unwrap_or_default();
-        let now = Utc::now().naive_utc().timestamp();
+        let now = Utc::now().timestamp();
 
         if old_secret.is_empty() {
             error!("update password: secret not found, user = {}", person.get_id());
@@ -296,7 +296,7 @@ impl<'a> AuthWorkPlace<'a> {
     }
 
     fn request_new_password(&mut self, user: &mut Individual, edited: i64, account: &mut Individual) -> ResultCode {
-        let now = Utc::now().naive_utc().timestamp();
+        let now = Utc::now().timestamp();
         warn!("request new password, login = {}, password = {}, secret = {}", self.login, self.password, self.secret);
 
         if let Some(account_origin) = account.get_first_literal("v-s:authOrigin") {
@@ -305,7 +305,7 @@ impl<'a> AuthWorkPlace<'a> {
                     let mailbox = account.get_first_literal("v-s:mailbox").unwrap_or_default();
                     user.parse_all();
                     let user_name = user.get_first_literal("rdfs:label").unwrap_or_else(|| user.get_id().to_string());
-                    
+
                     send_notification_email(template, &mailbox, &user_name, None, self.sys_ticket, self.backend);
                     info!("sent notification about forbidden password change, user={}", account.get_id());
                 }
@@ -355,7 +355,7 @@ impl<'a> AuthWorkPlace<'a> {
             let mailbox = account.get_first_literal("v-s:mailbox").unwrap_or_default();
             user.parse_all();
             let user_name = user.get_first_literal("rdfs:label").unwrap_or_else(|| user.get_id().to_string());
-            
+
             let result = send_notification_email(template, &mailbox, &user_name, Some(&n_secret), self.sys_ticket, self.backend);
             if result != ResultCode::Ok {
                 error!("failed to send email with new secret, user = {}", account.get_id());
