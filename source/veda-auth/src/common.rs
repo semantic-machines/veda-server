@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use data_encoding::HEXLOWER;
+use log::{error, info, warn, debug};
 use mustache::MapBuilder;
+use lazy_static::lazy_static;
 use parse_duration::parse;
 use regex::Regex;
 use ring::rand::SecureRandom;
@@ -15,13 +17,13 @@ use v_common::module::module_impl::Module;
 use v_common::module::ticket::Ticket;
 use v_common::module::veda_backend::Backend;
 use v_common::search::common::{FTQuery, QueryResult};
-use v_common::storage::common::{StorageId, VStorage};
+use v_storage::{StorageId, StorageResult, VStorage};
 use v_common::v_api::api_client::IndvOp;
-use v_common::v_api::obj::{OptAuthorize, ResultCode};
 use v_common::v_authorization::common::{AuthorizationContext, Trace};
 use v_individual_model::onto::datatype::Lang;
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::individual2msgpack::to_msgpack;
+use v_common::v_api::common_type::{OptAuthorize, ResultCode};
 
 pub const EMPTY_SHA256_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 pub const ALLOW_TRUSTED_GROUP: &str = "cfg:TrustedAuthenticationUserGroup";
@@ -30,7 +32,7 @@ pub const N_ITER: u32 = 100_000;
 pub const TICKS_TO_UNIX_EPOCH: i64 = 62_135_596_800_000;
 
 #[derive(Default, Debug)]
-pub(crate) struct UserStat {
+pub struct UserStat {
     pub wrong_count_login: i32,
     pub last_wrong_login_date: i64,
     pub attempt_change_pass: i32,
@@ -38,7 +40,7 @@ pub(crate) struct UserStat {
 }
 
 #[derive(Debug)]
-pub(crate) struct AuthConf {
+pub struct AuthConf {
     pub failed_auth_attempts: i32,
     pub failed_change_pass_attempts: i32,
     pub failed_auth_lock_period: i64,
@@ -70,7 +72,7 @@ impl Default for AuthConf {
     }
 }
 
-pub(crate) fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&str>, backend: &mut Backend) -> Ticket {
+pub fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&str>, backend: &mut Backend) -> Ticket {
     let tr_ticket_id = tr_ticket_id.unwrap_or_default();
     let mut ticket_obj = backend.get_ticket_from_db(tr_ticket_id);
     if ticket_obj.result == ResultCode::Ok {
@@ -99,7 +101,7 @@ pub(crate) fn logout(_conf: &AuthConf, tr_ticket_id: Option<&str>, _ip: Option<&
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn get_ticket_trusted(
+pub fn get_ticket_trusted(
     conf: &AuthConf,
     tr_ticket_id: Option<&str>,
     login: Option<&str>,
@@ -209,12 +211,12 @@ pub(crate) fn get_ticket_trusted(
     tr_ticket
 }
 
-pub(crate) fn get_candidate_users_of_login(login: &str, backend: &mut Backend, xr: &mut XapianReader, auth_data: &mut VStorage) -> QueryResult {
+pub fn get_candidate_users_of_login(login: &str, backend: &mut Backend, xr: &mut XapianReader, auth_data: &mut VStorage) -> QueryResult {
     lazy_static! {
         static ref RE: Regex = Regex::new("[-]").unwrap();
     }
 
-    if let Some(account_id) = auth_data.get_value(StorageId::Az, &format!("_L:{}", login.to_lowercase())) {
+    if let StorageResult::Ok(account_id) = auth_data.get_value(StorageId::Az, &format!("_L:{}", login.to_lowercase())) {
         info!("az.db: found account={}, login={}", account_id, login);
         return QueryResult {
             result: Vec::from([account_id]),
@@ -241,7 +243,7 @@ pub(crate) fn get_candidate_users_of_login(login: &str, backend: &mut Backend, x
     res
 }
 
-pub(crate) fn create_new_credential(systicket: &str, module: &mut Backend, credential: &mut Individual, account: &mut Individual) -> bool {
+pub fn create_new_credential(systicket: &str, module: &mut Backend, credential: &mut Individual, account: &mut Individual) -> bool {
     let password = account.get_first_literal("v-s:password").unwrap_or_default();
 
     credential.set_id(&(account.get_id().to_owned() + "-crdt"));
@@ -268,7 +270,7 @@ pub(crate) fn create_new_credential(systicket: &str, module: &mut Backend, crede
     true
 }
 
-pub(crate) fn set_password(credential: &mut Individual, password: &str) {
+pub fn set_password(credential: &mut Individual, password: &str) {
     let n_iter = NonZeroU32::new(N_ITER).unwrap();
     let rng = rand::SystemRandom::new();
 
@@ -287,7 +289,7 @@ pub(crate) fn set_password(credential: &mut Individual, password: &str) {
     }
 }
 
-pub(crate) fn remove_secret(uses_credential: &mut Individual, person_id: &str, module: &mut Backend, systicket: &str) {
+pub fn remove_secret(uses_credential: &mut Individual, person_id: &str, module: &mut Backend, systicket: &str) {
     if uses_credential.get_first_literal("v-s:secret").is_some() {
         uses_credential.remove("v-s:secret");
 
@@ -298,7 +300,7 @@ pub(crate) fn remove_secret(uses_credential: &mut Individual, person_id: &str, m
     }
 }
 
-pub(crate) fn read_duration_param(indv: &mut Individual, param: &str) -> Option<std::time::Duration> {
+pub fn read_duration_param(indv: &mut Individual, param: &str) -> Option<std::time::Duration> {
     if let Some(v) = indv.get_first_literal(param) {
         if let Ok(d) = parse(&v) {
             return Some(d);
@@ -309,7 +311,7 @@ pub(crate) fn read_duration_param(indv: &mut Individual, param: &str) -> Option<
     None
 }
 
-pub(crate) fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
+pub fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
     let mut res = AuthConf::default();
 
     res.check_ticket_ip = Module::get_property::<String>("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
@@ -366,7 +368,7 @@ pub(crate) fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
     res
 }
 
-pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration: i64, ticket: &mut Ticket, storage: &mut VStorage) {
+pub fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration: i64, ticket: &mut Ticket, storage: &mut VStorage) {
     if addr.parse::<IpAddr>().is_err() {
         error!("fail create_new_ticket: invalid ip {}", addr);
         return;
@@ -415,7 +417,7 @@ pub(crate) fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration
     }
 }
 
-pub(crate) fn create_sys_ticket(storage: &mut VStorage) -> Ticket {
+pub fn create_sys_ticket(storage: &mut VStorage) -> Ticket {
     let mut ticket = Ticket::default();
     create_new_ticket("veda", "cfg:VedaSystem", "127.0.0.1", 90_000_000, &mut ticket, storage);
 
@@ -439,14 +441,15 @@ pub(crate) fn create_sys_ticket(storage: &mut VStorage) -> Ticket {
 fn store(ticket_indv: &Individual, storage: &mut VStorage) -> bool {
     let mut raw1: Vec<u8> = Vec::new();
     if to_msgpack(ticket_indv, &mut raw1).is_ok() {
-        if storage.put_kv_raw(StorageId::Tickets, ticket_indv.get_id(), raw1) {
+        if matches!(storage.put_raw_value(StorageId::Tickets, ticket_indv.get_id(), raw1), StorageResult::Ok(_)) {
             return true;
         }
     }
     false
 }
 
-pub(crate) fn send_notification_email(
+#[allow(dead_code)]
+pub fn send_notification_email(
     template: &(String, String),
     mailbox: &str,
     user_name: &str,

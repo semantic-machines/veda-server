@@ -2,21 +2,22 @@ use crate::common::{
     create_new_credential, create_new_ticket, get_candidate_users_of_login, remove_secret, send_notification_email, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH,
     N_ITER,
 };
+use log::{error, info, warn};
 use chrono::Utc;
 use data_encoding::HEXLOWER;
 use rand::{thread_rng, Rng};
 use ring::pbkdf2;
+use v_storage::VStorage;
 use std::num::NonZeroU32;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::ticket::Ticket;
 use v_common::module::veda_backend::Backend;
-use v_common::storage::common::VStorage;
 use v_common::v_api::api_client::IndvOp;
-use v_common::v_api::obj::ResultCode;
 use v_individual_model::onto::datatype::Lang;
 use v_individual_model::onto::individual::Individual;
+use v_common::v_api::common_type::ResultCode;
 
-pub(crate) struct AuthWorkPlace<'a> {
+pub struct AuthWorkPlace<'a> {
     pub conf: &'a AuthConf,
     pub login: &'a str,
     pub password: &'a str,
@@ -36,7 +37,7 @@ pub(crate) struct AuthWorkPlace<'a> {
 }
 
 impl<'a> AuthWorkPlace<'a> {
-    pub(crate) fn authenticate(&mut self) -> Ticket {
+    pub fn authenticate(&mut self) -> Ticket {
         let mut ticket = Ticket::default();
 
         info!("authenticate, login = {:?}, password = {:?}, secret = {:?}", self.login, self.password, self.secret);

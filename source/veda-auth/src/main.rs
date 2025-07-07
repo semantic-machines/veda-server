@@ -1,6 +1,5 @@
 #[macro_use]
 extern crate log;
-#[macro_use]
 extern crate lazy_static;
 
 mod auth;
@@ -12,6 +11,7 @@ use nng::options::{Options, RecvTimeout, SendTimeout};
 use nng::{Error, Message, Protocol, Socket};
 use serde_json::json;
 use serde_json::value::Value as JSONValue;
+use v_storage::{StorageMode, VStorage};
 use std::collections::HashMap;
 use std::time::Duration;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
@@ -19,7 +19,6 @@ use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::init_module_log;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::veda_backend::Backend;
-use v_common::storage::common::{StorageMode, VStorage};
 
 const TIMEOUT_RECV: u64 = 30;
 const TIMEOUT_SEND: u64 = 60;
@@ -31,7 +30,9 @@ fn main() -> std::io::Result<()> {
 
     let mut backend = Backend::create(StorageMode::ReadWrite, false);
     info!("connect to AUTHORIZE DB...");
-    let mut auth_data = VStorage::new_lmdb("./data", StorageMode::ReadOnly, None);
+    let auth_data_box = VStorage::builder().lmdb("./data", StorageMode::ReadOnly, None).build()
+        .expect("failed to initialize auth data storage");
+    let mut auth_data = VStorage::new(auth_data_box);
 
     let systicket = if let Ok(t) = backend.get_sys_ticket_id() {
         t

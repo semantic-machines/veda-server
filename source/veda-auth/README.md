@@ -1,233 +1,304 @@
-# veda-auth
+# Veda Auth
 
-Authentication module for Veda system. It provides API for user management and authentication tickets using nanomsg protocol.
+Authentication system for Veda platform, written in Rust.
 
-## Description
+## Features
 
-`veda-auth` is a high-performance authentication service that provides:
-- User authentication by login and password
-- Session management through tickets
-- Trusted authentication between services
-- Password change with email confirmation
-- Protection against brute force attacks
+- **Secure authentication** with PBKDF2 password hashing
+- **Protection against brute force attacks** with automatic user blocking
+- **Password reset** through secret codes with email notifications
+- **Trusted authentication** for system operations
+- **Ticket lifecycle management** with time control
+- **Support for different authentication sources** (VEDA, AD)
+- **Configurable security policies**
 
 ## Architecture
 
-### How it works
+The system consists of:
+- **Authentication server** (main.rs) - handles requests through NNG protocol
+- **Authentication library** (lib.rs) - main authentication logic
+- **User management modules** (common.rs) - helper functions
+- **Authentication handler** (auth.rs) - main AuthWorkPlace logic
 
-1. **Transport**: Uses nanomsg protocol (via `nng` library) with REP/REQ pattern
-2. **Data format**: JSON for requests and responses
-3. **Storage**: LMDB for tickets and authentication data
-4. **Search**: Xapian for user search
-5. **Authorization**: LmdbAzContext for access rights checking
+## Quick Start
 
-### Components
+### 1. Install dependencies
+```bash
+cargo build
+```
 
-- `main.rs` - main nanomsg server
-- `auth.rs` - authentication and password change logic
-- `common.rs` - common functions and configuration
+### 2. Run server
+```bash
+cargo run
+```
+
+### 3. Basic usage
+```rust
+use veda_auth::*;
+use v_storage::VStorage;
+use v_common::module::ticket::Ticket;
+
+// Create storage
+let storage_box = VStorage::builder().memory().build()?;
+let mut storage = VStorage::new(storage_box);
+
+// Create system ticket
+let sys_ticket = create_sys_ticket(&mut storage);
+
+// Create user credentials
+let mut credential = Individual::default();
+set_password(&mut credential, "secure_password");
+
+// Create user ticket
+let mut ticket = Ticket::default();
+create_new_ticket("user1", "user:123", "127.0.0.1", 3600, &mut ticket, &mut storage);
+```
+
+## Usage Examples
+
+The `examples/` folder contains detailed usage examples:
+
+### 📚 Basic examples
+
+- **`quick_start.rs`** - Minimal code to get started
+- **`basic_usage.rs`** - Main system features
+- **`configuration_example.rs`** - Configuration for different environments
+
+### 🔧 Advanced examples
+
+- **`simple_client.rs`** - Client for connecting to server
+- **`integration_example.rs`** - Integration with other systems
+- **`testing_example.rs`** - Testing functionality
+
+### Run examples
+
+```bash
+# Quick start
+cargo run --example quick_start
+
+# Basic usage
+cargo run --example basic_usage
+
+# Configuration setup
+cargo run --example configuration_example
+
+# Client-server (requires running server)
+cargo run --example simple_client
+
+# System integration
+cargo run --example integration_example
+
+# Testing
+cargo run --example testing_example
+```
 
 ## API
 
-Server accepts JSON requests and returns JSON responses via nanomsg. All requests must contain `function` field that defines operation type.
+### Main functions
 
-### 1. User Authentication
+```rust
+// Set password
+set_password(&mut credential, "password");
 
-**Request:**
-```json
-{
-  "function": "authenticate",
-  "login": "user_login",
-  "password": "sha256_hash_of_password", 
-  "secret": "secret_code_for_password_reset",
-  "addr": "client_ip_address"
-}
+// Create ticket
+create_new_ticket(login, user_id, ip, lifetime, &mut ticket, &mut storage);
+
+// Create system ticket
+create_sys_ticket(&mut storage);
+
+// Find users
+get_candidate_users_of_login(login, backend, xr, auth_data);
 ```
 
-**Response:**
-```json
-{
-  "type": "ticket",
-  "id": "ticket_id",
-  "user_uri": "user_uri",
-  "user_login": "user_login", 
-  "result": 200,
-  "end_time": 1640995200000,
-  "auth_origin": "VEDA"
+### Structures
+
+```rust
+// Authentication configuration
+pub struct AuthConf {
+    pub failed_auth_attempts: i32,
+    pub ticket_lifetime: i64,
+    pub pass_lifetime: i64,
+    // ... other settings
+}
+
+// User statistics
+pub struct UserStat {
+    pub wrong_count_login: i32,
+    pub last_wrong_login_date: i64,
+    // ... other fields
+}
+
+// Authentication workplace
+pub struct AuthWorkPlace<'a> {
+    pub login: &'a str,
+    pub password: &'a str,
+    pub ip: &'a str,
+    // ... other fields
 }
 ```
-
-**Description:**
-- `login` - user login
-- `password` - SHA256 hash of password (or special constant for empty password)
-- `secret` - secret code for password reset (optional):
-  - Empty string for normal authentication
-  - "?" to request password reset
-  - 6+ characters to confirm new password
-- `addr` - client IP address for ticket binding
-
-### 2. Get Trusted Ticket
-
-**Request:**
-```json
-{
-  "function": "get_ticket_trusted",
-  "ticket": "existing_ticket_id",
-  "login": "target_user_login",
-  "addr": "client_ip_address"
-}
-```
-
-**Response:**
-```json
-{
-  "type": "ticket", 
-  "id": "new_ticket_id",
-  "user_uri": "user_uri",
-  "user_login": "user_login",
-  "result": 200,
-  "end_time": 1640995200000
-}
-```
-
-**Description:**
-Allows getting ticket for another user with proper rights. Requires:
-- Valid ticket of user with permissions
-- Membership in `cfg:TrustedAuthenticationUserGroup` group or authentication as same user
-
-### 3. Logout
-
-**Request:**
-```json
-{
-  "function": "logout",
-  "ticket": "ticket_id",
-  "addr": "client_ip_address" 
-}
-```
-
-**Response:**
-```json
-{
-  "type": "ticket",
-  "id": "ticket_id", 
-  "result": 200,
-  "end_time": 1640995200000
-}
-```
-
-**Description:**
-Deactivates specified ticket by setting end time to current moment.
-
-## Result Codes
-
-- `200` (Ok) - Success
-- `201` (Created) - New object created
-- `400` (BadRequest) - Invalid request
-- `401` (Unauthorized) - Authentication error
-- `403` (Forbidden) - Access denied
-- `404` (NotFound) - User not found
-- `422` (UnprocessableEntity) - Invalid data
-- `429` (TooManyRequests) - Too many attempts
-- `451` (UnavailableForLegalReasons) - Password expired
-- `500` (InternalServerError) - Internal error
 
 ## Configuration
 
-Configuration is read from `cfg:standart_node` object in database:
+### Default settings
 
-### Security Parameters
-- `cfg:failed_auth_attempts` - max failed login attempts (default: 2)
-- `cfg:failed_auth_lock_period` - lock time after limit exceeded (default: 30 minutes)
-- `cfg:failed_change_pass_attempts` - max password change attempts (default: 2)
-- `cfg:failed_pass_change_lock_period` - password change lock time (default: 30 minutes)
-- `cfg:success_pass_change_lock_period` - min interval between password changes (default: 24 hours)
+```rust
+let config = AuthConf {
+    failed_auth_attempts: 2,           // Maximum failed attempts
+    ticket_lifetime: 10 * 60 * 60,    // Ticket lifetime (10 hours)
+    pass_lifetime: 90 * 24 * 60 * 60, // Password lifetime (90 days)
+    check_ticket_ip: true,             // Check IP for tickets
+    // ... other settings
+};
+```
 
-### Lifetime Parameters
-- `cfg:user_ticket_lifetime` - ticket lifetime (default: 10 hours)
-- `cfg:secret_lifetime` - secret code lifetime (default: 12 hours)
-- `cfg:user_password_lifetime` - max password age (default: 90 days)
+### Production configuration
 
-### Notifications
-- `cfg:expired_pass_notification_template` - expired password notification template
-- `cfg:denied_password_expired_notification_template` - password change denial notification template
+```rust
+let prod_config = AuthConf {
+    failed_auth_attempts: 3,
+    failed_auth_lock_period: 15 * 60,  // Lock for 15 minutes
+    ticket_lifetime: 8 * 60 * 60,      // Ticket for 8 hours
+    secret_lifetime: 6 * 60 * 60,      // Secret for 6 hours
+    check_ticket_ip: true,
+    // ... email notifications
+};
+```
 
 ## Security
 
-### Password Storage
-- Passwords are hashed using PBKDF2-HMAC-SHA512
-- Random salt is used for each password
-- 100,000 iterations to slow down attacks (constant `N_ITER` in `src/common.rs`)
+### Password hashing
+- Uses PBKDF2 with SHA-512
+- 100,000 iterations for attack protection
+- Unique salt for each password
 
-**What 100,000 iterations means:**
-PBKDF2 (Password-Based Key Derivation Function 2) applies hash function many times to password and salt. Large number of iterations makes hash computation slow (~0.1-0.2 seconds). This:
-- Is barely noticeable for normal user login
-- Significantly slows down brute force attacks
-- Makes dictionary attacks impossible in reasonable time
-- Meets modern security standards (OWASP recommends 100,000+ iterations for PBKDF2-SHA256)
+### Attack protection
+- Automatic blocking after failed attempts
+- Ticket lifetime limits
+- IP address checking for tickets
+- Password change frequency limits
 
-### Attack Protection
-- Limit on login attempts
-- Temporary blocking after limit exceeded
-- Ticket binding to IP addresses (optional)
-- Password change frequency control
+### Notifications
+- Email notifications for password changes
+- Warnings about blocked operations
+- Configurable notification templates
 
-### Password Reset
-- One-time secret code generation
-- Code delivery via email
-- Limited code lifetime
-- Protection against reuse
-
-## Running
+## Testing
 
 ```bash
-# Build dependencies
-cargo build --release
+# Run all tests
+cargo test
 
-# Run (requires veda.properties config file)
-./target/release/veda-auth
+# Run example tests
+cargo test --example basic_usage
+cargo test --example testing_example
+
+# Run with detailed output
+cargo test -- --nocapture
 ```
 
-### Environment Variables
-- `auth_url` - URL for nanomsg listening (from veda.properties)
-- `check_ticket_ip` - check IP when validating tickets (default: true)
+## Performance
 
-## Data Structure
+- Asynchronous request processing
+- In-memory caching for fast access
+- Optimized data structures
+- Configurable timeouts for network operations
 
-### Ticket
-```json
-{
-  "id": "uuid",
-  "user_uri": "d:user_123", 
-  "user_login": "username",
-  "start_time": 1640995200000,
-  "end_time": 1640998800000,
-  "result": 200
-}
+## Integration
+
+### Connect to server
+
+```rust
+use nng::{Protocol, Socket};
+
+let socket = Socket::new(Protocol::Req0)?;
+socket.dial("tcp://localhost:8080")?;
 ```
 
-### Credential
-- Password hash (PBKDF2)
-- Salt for hashing
-- Creation date
-- Secret code (for reset)
-- Permanent flag
+### Send requests
 
-## Dependencies
+```rust
+let request = json!({
+    "function": "authenticate",
+    "login": "user1",
+    "password": "password_hash",
+    "addr": "127.0.0.1"
+});
+```
 
-- `nng` - nanomsg library for Rust
-- `chrono` - date and time handling
-- `serde_json` - JSON serialization
-- `ring` - cryptographic functions
-- `uuid` - unique identifier generation
-- `v_common` - common Veda system components
+## Supported protocols
+
+- **NNG (nanomsg)** - main protocol for client-server communication
+- **JSON** - data exchange format
+- **TCP** - transport protocol
+
+## Logging
+
+The system supports detailed logging:
+
+```bash
+# Set logging level
+export RUST_LOG=info
+
+# Run with logging
+cargo run
+```
 
 ## Monitoring
 
-Service logs detailed information about all authentication operations:
-- Successful and failed login attempts
-- Ticket creation and deactivation
-- Password change requests
-- Configuration and database errors
+Metrics for monitoring:
+- Number of successful/failed authentications
+- Request processing time
+- Number of blocked users
+- Resource usage
 
-Logs contain user information, IP addresses and timestamps for security audit. 
+## Deployment
+
+### Docker
+
+```dockerfile
+FROM rust:1.70 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bullseye-slim
+COPY --from=builder /app/target/release/veda-auth /usr/local/bin/
+CMD ["veda-auth"]
+```
+
+### Systemd
+
+```ini
+[Unit]
+Description=Veda Auth Service
+After=network.target
+
+[Service]
+Type=simple
+User=veda
+ExecStart=/usr/local/bin/veda-auth
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## License
+
+The project is distributed under a license compatible with the Veda project.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Make sure all tests pass
+5. Create a Pull Request
+
+## Support
+
+For support:
+- Check examples in the `examples/` folder
+- Review existing tests
+- Create an Issue with problem description
+- Refer to Veda documentation 
