@@ -8,9 +8,9 @@ use std::io;
 use std::time::{Duration as StdDuration, Instant};
 use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record};
 use v_common::module::module_impl::PrepareError;
-use v_common::storage::common::StorageMode;
-use v_common::storage::lmdb_storage::LmdbInstance;
+use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
 use v_common::v_authorization::ACLRecordSet;
+use log::{info, warn, error};
 
 pub struct ACLCache {
     pub(crate) instance: LmdbInstance,
@@ -30,7 +30,7 @@ pub struct ACLCache {
 }
 
 impl ACLCache {
-    pub(crate) fn new(config: &Ini) -> Option<Self> {
+    pub fn new(config: &Ini) -> Option<Self> {
         let write_az_cache = config.get_from(Some("authorization_cache"), "write").unwrap_or("false").parse::<bool>().unwrap_or_default();
         if !write_az_cache {
             return None;
@@ -326,8 +326,8 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
         if processed_file_found {
             if let Some(file) = processed_file {
                 let mut state_file = File::create(state_file)?;
-                writeln!(state_file, "{}", file)?;
-                writeln!(state_file, "{}", line_number)?;
+                writeln!(state_file, "{file}")?;
+                writeln!(state_file, "{line_number}")?;
             } else {
                 // Удаление файла состояния, если обработка завершена
                 std::fs::remove_file(state_file)?;

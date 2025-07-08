@@ -5,10 +5,11 @@ use std::error::Error;
 use std::fmt;
 use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record, update_counters};
 use v_common::module::info::ModuleInfo;
-use v_common::onto::individual::Individual;
-use v_common::storage::lmdb_storage::LmdbInstance;
+use v_individual_model::onto::individual::Individual;
+use v_storage::lmdb_storage::LmdbInstance;
 use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE, PERMISSION_PREFIX};
 use v_common::v_authorization::{ACLRecord, ACLRecordSet};
+use log::{warn, debug};
 
 // Определяем пользовательский тип ошибки
 #[derive(Debug)]
@@ -26,7 +27,7 @@ impl fmt::Display for StorageError {
                 key,
                 source,
             } => {
-                write!(f, "Failed to put key '{}' into {}.", key, source)
+                write!(f, "Failed to put key '{key}' into {source}.")
             },
         }
     }
@@ -61,7 +62,7 @@ pub struct Context {
 }
 
 // Function to get the access value from an individual object
-fn get_access_from_individual(state: &mut Individual) -> u8 {
+pub fn get_access_from_individual(state: &mut Individual) -> u8 {
     let mut access = 0;
 
     if let Some(v) = state.get_first_bool("v-s:canCreate") {
@@ -180,14 +181,27 @@ pub fn index_right_sets(
 
     if n_is_del && !p_is_del {
         // Object is deleted
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut HashMap::new(), &CacheType::None)?;
+        let mut cache = HashMap::new();
+        let mut cache_ctx = CacheContext {
+            cache: &mut cache,
+            mode: &CacheType::None,
+        };
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut cache_ctx)?;
     } else if !n_is_del && p_is_del {
         // Object is restored
         let mut cache = HashMap::new();
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read)?;
+        let mut cache_ctx = CacheContext {
+            cache: &mut cache,
+            mode: &CacheType::Read,
+        };
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache_ctx)?;
     } else if !n_is_del && !p_is_del {
         // Object is updated
         let mut cache = HashMap::new();
+        let mut cache_ctx = CacheContext {
+            cache: &mut cache,
+            mode: &CacheType::Read,
+        };
         if !pre_resc.is_empty() {
             let empty_data = RightData {
                 resource: &[],
@@ -195,10 +209,14 @@ pub fn index_right_sets(
                 access: p_acs,
             };
 
-            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache, &CacheType::None)?;
+            // Temporarily change cache mode to None for deletion
+            cache_ctx.mode = &CacheType::None;
+            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache_ctx)?;
+            // Restore cache mode to Read
+            cache_ctx.mode = &CacheType::Read;
         }
 
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache, &CacheType::Read)?;
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache_ctx)?;
     }
 
     Ok(())
@@ -212,6 +230,18 @@ enum CacheType {
     None,
 }
 
+// Structure for caching context
+struct CacheContext<'a> {
+    cache: &'a mut HashMap<String, String>,
+    mode: &'a CacheType,
+}
+
+// Structure for processing context
+struct ProcessingContext {
+    is_deleted: bool,
+    prev_access: u8,
+}
+
 // Function for adding or removing access right sets
 fn add_or_del_right_sets(
     id: &str,
@@ -220,8 +250,7 @@ fn add_or_del_right_sets(
     aux_data: &AuxData,
     is_deleted: bool,
     ctx: &mut Context,
-    cache: &mut HashMap<String, String>,
-    mode: &CacheType,
+    cache_ctx: &mut CacheContext,
 ) -> Result<(), StorageError> {
     // Get the resources and groups that have been removed
     let removed_resource = get_disappeared(prev_data.resource, new_data.resource);
@@ -236,10 +265,18 @@ fn add_or_del_right_sets(
             access: new_data.access,
         };
 
-        update_right_set(id, &t_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode)?;
+        let proc_ctx = ProcessingContext {
+            is_deleted,
+            prev_access: prev_data.access,
+        };
+        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx)?;
     } else {
         // Update the access right set with the new data
-        update_right_set(id, new_data, is_deleted, prev_data.access, aux_data, ctx, cache, mode)?;
+        let proc_ctx = ProcessingContext {
+            is_deleted,
+            prev_access: prev_data.access,
+        };
+        update_right_set(id, new_data, proc_ctx, aux_data, ctx, cache_ctx)?;
     }
 
     if !removed_resource.is_empty() {
@@ -249,7 +286,11 @@ fn add_or_del_right_sets(
             in_set: new_data.in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode)?;
+        let proc_ctx = ProcessingContext {
+            is_deleted: true,
+            prev_access: prev_data.access,
+        };
+        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx)?;
     }
 
     if !removed_in_set.is_empty() {
@@ -259,7 +300,11 @@ fn add_or_del_right_sets(
             in_set: &removed_in_set,
             access: new_data.access,
         };
-        update_right_set(id, &t_data, true, prev_data.access, aux_data, ctx, cache, mode)?;
+        let proc_ctx = ProcessingContext {
+            is_deleted: true,
+            prev_access: prev_data.access,
+        };
+        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx)?;
     }
 
     Ok(())
@@ -273,26 +318,24 @@ fn add_or_del_right_sets(
 fn update_right_set(
     source_id: &str,
     new_data: &RightData,
-    is_deleted: bool,
-    prev_access: u8,
+    proc_ctx: ProcessingContext,
     aux_data: &AuxData,
     ctx: &mut Context,
-    cache: &mut HashMap<String, String>,
-    mode: &CacheType,
+    cache_ctx: &mut CacheContext,
 ) -> Result<(), StorageError> {
     for rs in new_data.resource.iter() {
         // Generate the key based on the prefix, filter, and resource identifier
         let key = aux_data.prefix.to_owned() + aux_data.use_filter + rs;
 
         debug!("APPLY ACCESS = {}", new_data.access);
-        if is_deleted {
+        if proc_ctx.is_deleted {
             debug!("IS DELETED");
         }
 
         let mut new_right_set = ACLRecordSet::new();
 
         // Retrieve the previous access right set from the cache or storage
-        if let Some(prev_data_str) = cache.get(&key) {
+        if let Some(prev_data_str) = cache_ctx.cache.get(&key) {
             debug!("PRE(MEM): {} {} {:?}", source_id, rs, prev_data_str);
             decode_rec_to_rightset(prev_data_str, &mut new_right_set);
         } else if let Some(prev_data_str) = ctx.storage.get::<String>(&key) {
@@ -303,20 +346,20 @@ fn update_right_set(
         // Update the access right set based on the new data and deletion flag
         for in_set_id in new_data.in_set.iter() {
             if let Some(rr) = new_right_set.get_mut(in_set_id) {
-                rr.is_deleted = is_deleted;
+                rr.is_deleted = proc_ctx.is_deleted;
                 rr.marker = aux_data.marker;
                 if aux_data.is_drop_count {
-                    rr.access = update_counters(&mut rr.counters, prev_access, new_data.access, is_deleted, aux_data.is_drop_count);
+                    rr.access = update_counters(&mut rr.counters, proc_ctx.prev_access, new_data.access, proc_ctx.is_deleted, aux_data.is_drop_count);
                     if rr.access != 0 && !rr.counters.is_empty() {
                         rr.is_deleted = false;
                     }
-                } else if is_deleted {
-                    rr.access = update_counters(&mut rr.counters, prev_access, rr.access | prev_access, is_deleted, false);
+                } else if proc_ctx.is_deleted {
+                    rr.access = update_counters(&mut rr.counters, proc_ctx.prev_access, rr.access | proc_ctx.prev_access, proc_ctx.is_deleted, false);
                     if rr.access != 0 && !rr.counters.is_empty() {
                         rr.is_deleted = false;
                     }
                 } else {
-                    rr.access = update_counters(&mut rr.counters, prev_access, new_data.access, is_deleted, false);
+                    rr.access = update_counters(&mut rr.counters, proc_ctx.prev_access, new_data.access, proc_ctx.is_deleted, false);
                 }
             } else {
                 new_right_set.insert(
@@ -325,7 +368,7 @@ fn update_right_set(
                         id: in_set_id.to_string(),
                         access: new_data.access,
                         marker: aux_data.marker,
-                        is_deleted,
+                        is_deleted: proc_ctx.is_deleted,
                         level: 0,
                         counters: HashMap::default(),
                     },
@@ -336,9 +379,9 @@ fn update_right_set(
         let new_record = encode_record(None, &new_right_set, ctx.version_of_index_format);
 
         // Save the updated access right set to the cache or storage
-        if *mode == CacheType::Write {
+        if *cache_ctx.mode == CacheType::Write {
             debug!("NEW(MEM): {} {} {:?}", source_id, rs, new_record);
-            cache.insert(key, new_record);
+            cache_ctx.cache.insert(key, new_record);
         } else {
             debug!("NEW(STORAGE): {} {} {:?}", source_id, rs, new_record);
             

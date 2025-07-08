@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod main_test;
-
 use ini::Ini;
 use std::fs::File;
 use std::io::Read;
@@ -15,9 +12,8 @@ use v_common::init_module_log;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_cmd, get_inner_binobj_as_individual, init_log, Module, PrepareError};
 use v_common::module::veda_backend::Backend;
-use v_common::onto::individual::Individual;
-use v_common::storage::common::StorageMode;
-use v_common::storage::lmdb_storage::LmdbInstance;
+use v_individual_model::onto::individual::Individual;
+use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_authorization::common::{Access, FILTER_PREFIX, MEMBERSHIP_PREFIX};
 use v_common::v_queue::consumer::Consumer;
