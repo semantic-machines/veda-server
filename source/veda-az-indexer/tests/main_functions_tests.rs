@@ -8,6 +8,29 @@ use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::PrepareError;
 
+// Wrapper for LmdbInstance to implement Storage trait in tests
+struct TestStorage(LmdbInstance);
+
+impl TestStorage {
+    fn new(path: &str, mode: StorageMode) -> Self {
+        TestStorage(LmdbInstance::new(path, mode))
+    }
+}
+
+impl Storage for TestStorage {
+    fn get(&mut self, key: &str) -> Option<String> {
+        self.0.get::<String>(key)
+    }
+    
+    fn put(&mut self, key: &str, value: &str) -> bool {
+        self.0.put(key, value)
+    }
+    
+    fn remove(&mut self, key: &str) -> bool {
+        self.0.remove(key)
+    }
+}
+
 // Helper function to create a test context
 fn create_test_context() -> Context {
     let temp_dir = TempDir::new().unwrap();
@@ -17,7 +40,7 @@ fn create_test_context() -> Context {
     Context {
         permission_statement_counter: 0,
         membership_counter: 0,
-        storage: LmdbInstance::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite),
+        storage: Box::new(TestStorage::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite)),
         version_of_index_format: 2,
         module_info: ModuleInfo::new(module_info_path.to_str().unwrap(), "test_module", true).unwrap(),
         acl_cache: None,
@@ -116,7 +139,7 @@ fn test_prepare_account() {
     
     // Verify the account was stored in the database
     let expected_key = "_L:test:account1";
-    let stored_value = ctx.storage.get::<String>(expected_key);
+    let stored_value = ctx.storage.get(expected_key);
     assert_eq!(stored_value, Some("test:account1".to_string()), "Account should be stored in database with correct ID");
     
     // Test case 2: Delete account
@@ -128,14 +151,14 @@ fn test_prepare_account() {
     
     // Verify account was created with correct value
     let key2 = "_L:test:account2";
-    let stored_before_deletion = ctx.storage.get::<String>(key2);
+    let stored_before_deletion = ctx.storage.get(key2);
     assert_eq!(stored_before_deletion, Some("test:account2".to_string()), "Account should exist before deletion with correct ID");
     
     // Now delete it
     prepare_account(&mut prev_state2, &mut new_state2, &mut ctx);
     
     // Verify the account was removed from the database
-    let stored_value2 = ctx.storage.get::<String>(key2);
+    let stored_value2 = ctx.storage.get(key2);
     assert!(stored_value2.is_none(), "Account should be removed from database after deletion");
     
     // Test case 3: Update account (same ID, should overwrite)
@@ -146,7 +169,7 @@ fn test_prepare_account() {
     
     // Verify the account was stored
     let key3 = "_L:test:account3";
-    let stored_value3 = ctx.storage.get::<String>(key3);
+    let stored_value3 = ctx.storage.get(key3);
     assert_eq!(stored_value3, Some("test:account3".to_string()), "Updated account should be stored in database with correct ID");
     
     // Test case 4: No operation (both states empty)
@@ -157,7 +180,7 @@ fn test_prepare_account() {
     
     // This should not affect any existing data
     let key1_after = "_L:test:account1";
-    let stored_after_noop = ctx.storage.get::<String>(key1_after);
+    let stored_after_noop = ctx.storage.get(key1_after);
     assert_eq!(stored_after_noop, Some("test:account1".to_string()), "Existing account should remain unchanged with correct ID");
 }
 

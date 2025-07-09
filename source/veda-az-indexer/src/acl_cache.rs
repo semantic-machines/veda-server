@@ -6,7 +6,7 @@ use ini::Ini;
 use parse_duration::parse;
 use std::io;
 use std::time::{Duration as StdDuration, Instant};
-use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record};
+use v_common::v_authorization::record_formats::{decode_rec_to_rightset, encode_record};
 use v_common::module::module_impl::PrepareError;
 use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
 use v_common::v_authorization::ACLRecordSet;
@@ -292,7 +292,7 @@ pub fn process_stat_files(ctx: &mut Context) -> Result<bool, io::Error> {
                     }
 
                     // Получение значения из основного хранилища и добавление в кеш
-                    match ctx.storage.get::<String>(identifier) {
+                    match ctx.storage.get(identifier) {
                         Some(value) => {
                             let mut record_set = ACLRecordSet::new();
                             let (_, _) = decode_rec_to_rightset(&value, &mut record_set);

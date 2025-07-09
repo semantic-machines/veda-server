@@ -21,6 +21,21 @@ use v_common::v_queue::consumer::Consumer;
 mod acl_cache;
 mod common;
 
+// Implementation of Storage trait for LmdbInstance
+impl Storage for LmdbInstance {
+    fn get(&mut self, key: &str) -> Option<String> {
+        LmdbInstance::get::<String>(self, key)
+    }
+    
+    fn put(&mut self, key: &str, value: &str) -> bool {
+        LmdbInstance::put(self, key, value)
+    }
+    
+    fn remove(&mut self, key: &str) -> bool {
+        LmdbInstance::remove(self, key)
+    }
+}
+
 fn main() -> Result<(), i32> {
     init_module_log!("AZ_INDEXER");
 
@@ -41,13 +56,13 @@ fn main() -> Result<(), i32> {
     let mut ctx = Context {
         permission_statement_counter: 0,
         membership_counter: 0,
-        storage: LmdbInstance::new("./data/acl-indexes", StorageMode::ReadWrite),
+        storage: Box::new(LmdbInstance::new("./data/acl-indexes", StorageMode::ReadWrite)),
         version_of_index_format: 2,
         module_info: module_info.unwrap(),
         acl_cache: ACLCache::new(&config),
     };
 
-    if ctx.storage.get::<String>("Pcfg:VedaSystem").is_none() {
+    if ctx.storage.get("Pcfg:VedaSystem").is_none() {
         info!("create permission for system account");
         let mut sys_permission = Individual::default();
         sys_permission.set_id("cfg:VedaSystemPermission");

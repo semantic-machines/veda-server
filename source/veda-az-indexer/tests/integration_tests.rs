@@ -8,6 +8,29 @@ use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
 use v_common::module::info::ModuleInfo;
 use v_common::v_authorization::common::Access;
 
+// Wrapper for LmdbInstance to implement Storage trait in tests
+struct TestStorage(LmdbInstance);
+
+impl TestStorage {
+    fn new(path: &str, mode: StorageMode) -> Self {
+        TestStorage(LmdbInstance::new(path, mode))
+    }
+}
+
+impl Storage for TestStorage {
+    fn get(&mut self, key: &str) -> Option<String> {
+        self.0.get::<String>(key)
+    }
+    
+    fn put(&mut self, key: &str, value: &str) -> bool {
+        self.0.put(key, value)
+    }
+    
+    fn remove(&mut self, key: &str) -> bool {
+        self.0.remove(key)
+    }
+}
+
 // Helper function to create a test context
 fn create_test_context() -> Context {
     let temp_dir = TempDir::new().unwrap();
@@ -17,7 +40,7 @@ fn create_test_context() -> Context {
     Context {
         permission_statement_counter: 0,
         membership_counter: 0,
-        storage: LmdbInstance::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite),
+        storage: Box::new(TestStorage::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite)),
         version_of_index_format: 2,
         module_info: ModuleInfo::new(module_info_path.to_str().unwrap(), "test_module", true).unwrap(),
         acl_cache: None,

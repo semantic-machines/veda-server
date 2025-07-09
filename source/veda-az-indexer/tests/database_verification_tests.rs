@@ -5,8 +5,31 @@ use v_individual_model::onto::individual::Individual;
 use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
 use v_common::module::info::ModuleInfo;
 use v_common::v_authorization::common::{Access, PERMISSION_PREFIX, MEMBERSHIP_PREFIX, FILTER_PREFIX};
-use v_common::az_impl::formats::{decode_rec_to_rightset};
+use v_common::v_authorization::record_formats::{decode_rec_to_rightset};
 use v_common::v_authorization::ACLRecordSet;
+
+// Wrapper for LmdbInstance to implement Storage trait in tests
+struct TestStorage(LmdbInstance);
+
+impl TestStorage {
+    fn new(path: &str, mode: StorageMode) -> Self {
+        TestStorage(LmdbInstance::new(path, mode))
+    }
+}
+
+impl Storage for TestStorage {
+    fn get(&mut self, key: &str) -> Option<String> {
+        self.0.get(key)
+    }
+    
+    fn put(&mut self, key: &str, value: &str) -> bool {
+        self.0.put(key, value)
+    }
+    
+    fn remove(&mut self, key: &str) -> bool {
+        self.0.remove(key)
+    }
+}
 
 // Helper function to create a test context
 fn create_test_context() -> Context {
@@ -17,7 +40,7 @@ fn create_test_context() -> Context {
     Context {
         permission_statement_counter: 0,
         membership_counter: 0,
-        storage: LmdbInstance::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite),
+        storage: Box::new(TestStorage::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite)),
         version_of_index_format: 2,
         module_info: ModuleInfo::new(module_info_path.to_str().unwrap(), "test_module", true).unwrap(),
         acl_cache: None,
@@ -50,7 +73,7 @@ fn test_permission_statement_database_write() {
     
     // Check what was written to the database
     let expected_key = format!("{PERMISSION_PREFIX}test:resource1");
-    let stored_value = ctx.storage.get::<String>(&expected_key);
+    let stored_value = ctx.storage.get(&expected_key);
     assert!(stored_value.is_some(), "Expected data to be written to storage with key: {expected_key}");
     
     // Decode and verify the stored data
@@ -96,7 +119,7 @@ fn test_membership_database_write() {
     
     // Check what was written to the database
     let expected_key = format!("{MEMBERSHIP_PREFIX}test:resource1");
-    let stored_value = ctx.storage.get::<String>(&expected_key);
+    let stored_value = ctx.storage.get(&expected_key);
     assert!(stored_value.is_some(), "Expected membership data to be written to storage with key: {expected_key}");
     
     // Decode and verify the stored data
@@ -140,7 +163,7 @@ fn test_permission_filter_database_write() {
     
     // Check what was written to the database
     let expected_key = format!("{FILTER_PREFIX}test:object1");
-    let stored_value = ctx.storage.get::<String>(&expected_key);
+    let stored_value = ctx.storage.get(&expected_key);
     assert!(stored_value.is_some(), "Expected filter data to be written to storage with key: {expected_key}");
     
     // Decode and verify the stored data
@@ -176,7 +199,7 @@ fn test_account_database_write() {
     
     // Check what was written to the database
     let expected_key = format!("_L:{}", "test:account1");
-    let stored_value = ctx.storage.get::<String>(&expected_key);
+    let stored_value = ctx.storage.get(&expected_key);
     assert!(stored_value.is_some(), "Expected account data to be written to storage with key: {expected_key}");
     
     let stored_data = stored_value.unwrap();
@@ -201,7 +224,7 @@ fn test_multiple_permission_subjects_database_write() {
     
     // Check what was written to the database
     let expected_key = format!("{PERMISSION_PREFIX}test:resource2");
-    let stored_value = ctx.storage.get::<String>(&expected_key);
+    let stored_value = ctx.storage.get(&expected_key);
     assert!(stored_value.is_some(), "Expected data to be written to storage");
     
     // Decode and verify the stored data
@@ -253,7 +276,7 @@ fn test_permission_update_database_write() {
     
     // Check the updated data in database
     let expected_key = format!("{PERMISSION_PREFIX}test:resource3");
-    let stored_value = ctx.storage.get::<String>(&expected_key);
+    let stored_value = ctx.storage.get(&expected_key);
     assert!(stored_value.is_some(), "Expected updated data to be in storage");
     
     let stored_data = stored_value.unwrap();
@@ -299,7 +322,7 @@ fn test_permission_deletion_database_write() {
     
     // Check the database after deletion
     let expected_key = format!("{PERMISSION_PREFIX}test:resource4");
-    let stored_value = ctx.storage.get::<String>(&expected_key);
+    let stored_value = ctx.storage.get(&expected_key);
     assert!(stored_value.is_some(), "Data should still exist in storage after deletion");
     
     let stored_data = stored_value.unwrap();
@@ -336,7 +359,7 @@ fn test_database_key_format_verification() {
     
     // Verify permission key format: PERMISSION_PREFIX + resource
     let permission_key = format!("{PERMISSION_PREFIX}test:resource");
-    let permission_data = ctx.storage.get::<String>(&permission_key);
+    let permission_data = ctx.storage.get(&permission_key);
     assert!(permission_data.is_some(), 
             "Permission key format should be PERMISSION_PREFIX + resource");
     
@@ -370,7 +393,7 @@ fn test_database_key_format_verification() {
     
     // Verify membership key format: MEMBERSHIP_PREFIX + resource
     let membership_key = format!("{MEMBERSHIP_PREFIX}test:member_resource");
-    let membership_data = ctx.storage.get::<String>(&membership_key);
+    let membership_data = ctx.storage.get(&membership_key);
     assert!(membership_data.is_some(), 
             "Membership key format should be MEMBERSHIP_PREFIX + resource");
     
@@ -403,7 +426,7 @@ fn test_database_key_format_verification() {
     
     // Verify filter key format: FILTER_PREFIX + object
     let filter_key = format!("{FILTER_PREFIX}test:filter_object");
-    let filter_data = ctx.storage.get::<String>(&filter_key);
+    let filter_data = ctx.storage.get(&filter_key);
     assert!(filter_data.is_some(), 
             "Filter key format should be FILTER_PREFIX + object");
     

@@ -3,13 +3,19 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use v_common::az_impl::formats::{decode_rec_to_rightset, encode_record, update_counters};
+use v_common::v_authorization::record_formats::{decode_rec_to_rightset, encode_record, update_counters};
 use v_common::module::info::ModuleInfo;
 use v_individual_model::onto::individual::Individual;
-use v_storage::lmdb_storage::LmdbInstance;
 use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE, PERMISSION_PREFIX};
 use v_common::v_authorization::{ACLRecord, ACLRecordSet};
 use log::{warn, debug};
+
+// Trait for abstract storage operations
+pub trait Storage {
+    fn get(&mut self, key: &str) -> Option<String>;
+    fn put(&mut self, key: &str, value: &str) -> bool;
+    fn remove(&mut self, key: &str) -> bool;
+}
 
 // Определяем пользовательский тип ошибки
 #[derive(Debug)]
@@ -51,11 +57,10 @@ struct AuxData<'a> {
 }
 
 // Structure for storing execution context
-
 pub struct Context {
     pub permission_statement_counter: u32,
     pub membership_counter: u32,
-    pub storage: LmdbInstance,
+    pub storage: Box<dyn Storage>,
     pub version_of_index_format: u8,
     pub module_info: ModuleInfo,
     pub acl_cache: Option<ACLCache>,
@@ -338,7 +343,7 @@ fn update_right_set(
         if let Some(prev_data_str) = cache_ctx.cache.get(&key) {
             debug!("PRE(MEM): {} {} {:?}", source_id, rs, prev_data_str);
             decode_rec_to_rightset(prev_data_str, &mut new_right_set);
-        } else if let Some(prev_data_str) = ctx.storage.get::<String>(&key) {
+        } else if let Some(prev_data_str) = ctx.storage.get(&key) {
             debug!("PRE(STORAGE): {} {} {:?}", source_id, rs, prev_data_str);
             decode_rec_to_rightset(&prev_data_str, &mut new_right_set);
         }
@@ -385,7 +390,7 @@ fn update_right_set(
         } else {
             debug!("NEW(STORAGE): {} {} {:?}", source_id, rs, new_record);
             
-            if !ctx.storage.put(&key, new_record) {
+            if !ctx.storage.put(&key, &new_record) {
                 return Err(StorageError::StoragePutError {
                     key: key.clone(),
                     source: "storage".to_string(),
