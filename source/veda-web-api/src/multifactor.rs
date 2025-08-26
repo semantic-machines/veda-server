@@ -17,8 +17,8 @@ use openssl::sha::Sha256;
 use rand::rngs::OsRng;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
-use rsa::pkcs8::{FromPrivateKey, FromPublicKey};
-use rsa::{PaddingScheme, PublicKey};
+use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde::Deserialize;
 use serde_json::json;
 use std::io;
@@ -183,10 +183,10 @@ async fn encrypt(data: &str) -> io::Result<String> {
     File::open("./key_storage/public_key.pem").await?.read_to_string(&mut public_key_pem).await?;
     let pem_data = pem::parse(public_key_pem).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to parse PEM"))?;
     let public_key =
-        rsa::RsaPublicKey::from_public_key_der(&pem_data.contents).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to create public key from DER"))?;
+        RsaPublicKey::from_public_key_der(&pem_data.contents).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to create public key from DER"))?;
 
     // Шифрование
-    let padding = PaddingScheme::new_pkcs1v15_encrypt();
+    let padding = Pkcs1v15Encrypt;
     let encrypted_data = public_key.encrypt(&mut OsRng, padding, data.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to encrypt"))?;
     Ok(encode(encrypted_data))
 }
@@ -202,10 +202,10 @@ async fn decrypt(data: &str) -> io::Result<String> {
     let der_data = pem_data.contents;
 
     // Создание приватного ключа из DER в формате PKCS#8
-    let private_key = rsa::RsaPrivateKey::from_pkcs8_der(&der_data).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to create private key from DER"))?;
+    let private_key = RsaPrivateKey::from_pkcs8_der(&der_data).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to create private key from DER"))?;
 
     // Дешифрование
-    let padding = PaddingScheme::new_pkcs1v15_encrypt();
+    let padding = Pkcs1v15Encrypt;
     let decoded_data = base64::decode(data).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to decode base64 data"))?;
     let decrypted_data = private_key.decrypt(padding, &decoded_data).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to decrypt"))?;
     String::from_utf8(decrypted_data).map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to convert to String"))

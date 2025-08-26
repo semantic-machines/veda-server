@@ -10,6 +10,7 @@ mod multifactor;
 mod nlp_augment_text;
 mod nlp_transcription;
 mod query;
+mod sms_auth;
 mod update;
 mod user_activity;
 mod vql_query_client;
@@ -23,6 +24,7 @@ use crate::common::{db_connector, NLPServerConfig, TranscriptionConfig, UserCont
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
+use crate::sms_auth::{salted_sms_request, verify_sms_auth, SmsAuthConfig, SmsAuthService, SmsProviderConfig, MegalabsProvider, CodeSettings, RateLimits};
 use crate::nlp_augment_text::augment_text;
 use crate::nlp_transcription::recognize_audio;
 use crate::query::{query_get, query_post, stored_query, QueryEndpoints};
@@ -168,6 +170,60 @@ async fn main() -> std::io::Result<()> {
             };
         }
 
+        // SMS authentication configuration
+        let sms_config = if let Ok(conf) = Ini::load_from_file("sms_auth.ini") {
+            let section = conf.section(Some("sms")).expect("Section 'sms' not found");
+            
+            // Load SMS provider configuration
+            let provider_section = conf.section(Some("sms_provider")).expect("Section 'sms_provider' not found");
+            let provider_type = provider_section.get("provider").unwrap_or("megalabs");
+            
+            let provider = match provider_type {
+                "megalabs" => SmsProviderConfig::Megalabs {
+                    server: provider_section.get("server").unwrap_or("https://a2p-api.megalabs.ru/sms/v1/sms").to_string(),
+                    user: provider_section.get("user").expect("SMS provider user not found").to_string(),
+                    password: provider_section.get("password").expect("SMS provider password not found").to_string(),
+                    from: provider_section.get("from").unwrap_or("SLPK").to_string(),
+                    message_size_limit: provider_section.get("message_size_limit").unwrap_or("500").parse().unwrap_or(500),
+                },
+                _ => panic!("Unsupported SMS provider: {}", provider_type),
+            };
+            
+            SmsAuthConfig {
+                enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
+                client_secret: section.get("client_secret").expect("client_secret not found").to_string(),
+                provider,
+                code_settings: CodeSettings {
+                    length: section.get("code_length").unwrap_or("6").parse().unwrap_or(6),
+                    ttl_seconds: section.get("code_ttl").unwrap_or("300").parse().unwrap_or(300),
+                    max_attempts: section.get("max_attempts").unwrap_or("3").parse().unwrap_or(3),
+                },
+                rate_limits: RateLimits {
+                    codes_per_phone_per_hour: section.get("codes_per_phone_per_hour").unwrap_or("5").parse().unwrap_or(5),
+                    codes_per_ip_per_hour: section.get("codes_per_ip_per_hour").unwrap_or("20").parse().unwrap_or(20),
+                },
+                max_time_drift: section.get("max_time_drift").unwrap_or("300").parse().unwrap_or(300),
+            }
+        } else {
+            SmsAuthConfig::default()
+        };
+
+        // Create SMS provider
+        let sms_provider: Box<dyn crate::sms_auth::SmsProvider> = match &sms_config.provider {
+            SmsProviderConfig::Megalabs { server, user, password, from, message_size_limit } => {
+                Box::new(MegalabsProvider::new(
+                    server.clone(),
+                    user.clone(),
+                    password.clone(),
+                    from.clone(),
+                    *message_size_limit,
+                ))
+            },
+        };
+
+        // Create SMS authentication service
+        let sms_service = SmsAuthService::new(sms_config, sms_provider);
+
         let db = db_connector(&tt_config);
 
         let mut ch = CHClient::new(Module::get_property("query_search_db").unwrap_or_default());
@@ -237,6 +293,7 @@ async fn main() -> std::io::Result<()> {
             .data(mfp)
             .app_data(web::Data::new(nlp_server_config))
             .app_data(web::Data::new(transcription_config))
+            .app_data(web::Data::new(sms_service))
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
                 read_tickets: ticket_cache_read,
@@ -307,6 +364,11 @@ async fn main() -> std::io::Result<()> {
                             .route(web::route().method(m_options.clone()).to(handle_webdav_options_2))
                             .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_2)),
                     ),
+            )
+            .service(
+                web::scope("/auth/sms")
+                    .service(web::resource("/request").route(web::post().to(salted_sms_request)))
+                    .service(web::resource("/verify").route(web::post().to(verify_sms_auth)))
             )
             .service(web::resource("/").guard(guard::Post()).route(web::post().to(handle_post_request)))
             .service(Files::new("/", "./public").redirect_to_slash_directory().index_file("index.html"))
