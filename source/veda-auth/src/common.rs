@@ -11,6 +11,9 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::str::from_utf8;
 use uuid::Uuid;
+// Re-export mobile auth functionality from mobile_auth module
+pub use crate::mobile_auth::{SmsProviderConfig, read_sms_config_from_ini};
+
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::module_impl::Module;
@@ -52,6 +55,12 @@ pub struct AuthConf {
     pub expired_pass_notification_template: Option<(String, String)>,
     pub denied_password_expired_notification_template: Option<(String, String)>,
     pub check_ticket_ip: bool,
+    // SMS configuration
+    pub sms_rate_limit_seconds: i64,
+    pub sms_daily_limit: i32,
+    pub sms_code_min: u32,
+    pub sms_code_max: u32,
+    pub sms_provider: Option<SmsProviderConfig>,
 }
 
 impl Default for AuthConf {
@@ -68,6 +77,12 @@ impl Default for AuthConf {
             expired_pass_notification_template: None,
             denied_password_expired_notification_template: None,
             check_ticket_ip: true,
+            // SMS default values
+            sms_rate_limit_seconds: 60,
+            sms_daily_limit: 5,
+            sms_code_min: 100_000,
+            sms_code_max: 999_999,
+            sms_provider: None,
         }
     }
 }
@@ -341,6 +356,24 @@ pub fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
         if let Some(v) = node.get_first_integer("cfg:failed_change_pass_attempts") {
             res.failed_change_pass_attempts = v as i32;
         }
+
+        // SMS configuration
+        if let Some(d) = read_duration_param(&mut node, "cfg:sms_rate_limit_period") {
+            res.sms_rate_limit_seconds = d.as_secs() as i64;
+        }
+        if let Some(v) = node.get_first_integer("cfg:sms_daily_limit") {
+            res.sms_daily_limit = v as i32;
+        }
+        if let Some(v) = node.get_first_integer("cfg:sms_code_min") {
+            res.sms_code_min = v as u32;
+        }
+        if let Some(v) = node.get_first_integer("cfg:sms_code_max") {
+            res.sms_code_max = v as u32;
+        }
+
+        // SMS provider configuration from ini file
+        let sms_ini_path = node.get_first_literal("cfg:sms_config_file").unwrap_or_else(|| "sms.ini".to_string());
+        res.sms_provider = read_sms_config_from_ini(&sms_ini_path);
 
         if let Some(v) = node.get_first_literal("cfg:expired_pass_notification_template") {
             if let Some(mut i) = backend.get_individual_s(&v) {

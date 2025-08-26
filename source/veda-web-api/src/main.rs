@@ -24,7 +24,7 @@ use crate::common::{db_connector, NLPServerConfig, TranscriptionConfig, UserCont
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
-use crate::sms_auth::{salted_sms_request, verify_sms_auth, SmsAuthConfig, SmsAuthService, SmsProviderConfig, MegalabsProvider, CodeSettings, RateLimits};
+use crate::sms_auth::{salted_sms_request, verify_sms_auth, SmsAuthConfig, SmsAuthService};
 use crate::nlp_augment_text::augment_text;
 use crate::nlp_transcription::recognize_audio;
 use crate::query::{query_get, query_post, stored_query, QueryEndpoints};
@@ -170,59 +170,21 @@ async fn main() -> std::io::Result<()> {
             };
         }
 
-        // SMS authentication configuration
+        // SMS authentication configuration - simplified for veda-auth
         let sms_config = if let Ok(conf) = Ini::load_from_file("sms_auth.ini") {
             let section = conf.section(Some("sms")).expect("Section 'sms' not found");
-            
-            // Load SMS provider configuration
-            let provider_section = conf.section(Some("sms_provider")).expect("Section 'sms_provider' not found");
-            let provider_type = provider_section.get("provider").unwrap_or("megalabs");
-            
-            let provider = match provider_type {
-                "megalabs" => SmsProviderConfig::Megalabs {
-                    server: provider_section.get("server").unwrap_or("https://a2p-api.megalabs.ru/sms/v1/sms").to_string(),
-                    user: provider_section.get("user").expect("SMS provider user not found").to_string(),
-                    password: provider_section.get("password").expect("SMS provider password not found").to_string(),
-                    from: provider_section.get("from").unwrap_or("SLPK").to_string(),
-                    message_size_limit: provider_section.get("message_size_limit").unwrap_or("500").parse().unwrap_or(500),
-                },
-                _ => panic!("Unsupported SMS provider: {}", provider_type),
-            };
             
             SmsAuthConfig {
                 enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
                 client_secret: section.get("client_secret").expect("client_secret not found").to_string(),
-                provider,
-                code_settings: CodeSettings {
-                    length: section.get("code_length").unwrap_or("6").parse().unwrap_or(6),
-                    ttl_seconds: section.get("code_ttl").unwrap_or("300").parse().unwrap_or(300),
-                    max_attempts: section.get("max_attempts").unwrap_or("3").parse().unwrap_or(3),
-                },
-                rate_limits: RateLimits {
-                    codes_per_phone_per_hour: section.get("codes_per_phone_per_hour").unwrap_or("5").parse().unwrap_or(5),
-                    codes_per_ip_per_hour: section.get("codes_per_ip_per_hour").unwrap_or("20").parse().unwrap_or(20),
-                },
                 max_time_drift: section.get("max_time_drift").unwrap_or("300").parse().unwrap_or(300),
             }
         } else {
             SmsAuthConfig::default()
         };
 
-        // Create SMS provider
-        let sms_provider: Box<dyn crate::sms_auth::SmsProvider> = match &sms_config.provider {
-            SmsProviderConfig::Megalabs { server, user, password, from, message_size_limit } => {
-                Box::new(MegalabsProvider::new(
-                    server.clone(),
-                    user.clone(),
-                    password.clone(),
-                    from.clone(),
-                    *message_size_limit,
-                ))
-            },
-        };
-
-        // Create SMS authentication service
-        let sms_service = SmsAuthService::new(sms_config, sms_provider);
+        // Create SMS authentication service - using veda-auth API
+        let sms_service = SmsAuthService::new(sms_config);
 
         let db = db_connector(&tt_config);
 
