@@ -1,22 +1,29 @@
 # SMS Authentication API Specification
 
-Спецификация API для разработчика клиентской части.
+API specification for client-side developers.
 
-🔧 **Для серверных разработчиков**: См. `SMS_AUTH_README.md`  
-📋 **Этот файл**: Спецификация API для клиентских разработчиков
+For server developers: See `SMS_AUTH_README.md`
 
 ## Overview
 
-SMS аутентификация работает в 2 этапа:
-1. **Запрос SMS кода** - клиент отправляет подписанный запрос с номером телефона
-2. **Проверка кода** - клиент отправляет полученный SMS код для получения токена
+SMS authentication works in 2 stages:
+1. Request SMS code - client sends signed request with phone number
+2. Verify code - client sends received SMS code to get auth token
 
-📊 **Диаграмма потока**: См. `SMS_FLOW_DIAGRAM.md` - визуализация взаимодействия
+Flow diagram: See `SMS_FLOW_DIAGRAM.md`
+
+## Architecture
+
+The SMS module acts as a lightweight wrapper:
+- **Validates HMAC signatures** on client requests
+- **Creates encrypted session tokens** for stateless operation
+- **Delegates SMS handling** to veda-auth API
+- **Returns compatible auth tickets** for the main system
 
 ## Request Format
 
 ### Request Signing
-Все запросы к `/auth/sms/request` должны быть подписаны HMAC-SHA256:
+All requests to `/auth/sms/request` must include HMAC-SHA256 signature:
 
 ```
 message = "action=sms_request|nonce={uuid}|phone={phone}|salt={hex}|timestamp={unix_timestamp}"
@@ -31,7 +38,7 @@ X-Client-Type: web-app
 
 ## API Endpoints
 
-SMS аутентификация использует только 2 endpoint'а:
+SMS authentication uses only 2 endpoints:
 
 ### 1. Request SMS Code
 
@@ -55,7 +62,7 @@ SMS аутентификация использует только 2 endpoint'а
 }
 ```
 
-**Security Note:** `token` содержит зашифрованную информацию о сессии в виде JSON токена с полями `data` (зашифрованные данные) и `nonce` (для AES-GCM). Выше показан пример формата - реальный токен будет содержать актуальные зашифрованные данные. SMS отправляется на все валидные номера телефонов, проверка существования пользователя происходит только при верификации кода через AuthClient.
+`token` contains encrypted session information as a JSON token with `data` (RSA encrypted data) and `nonce` (random nonce) fields.
 
 **Response (Error):**
 ```json
@@ -64,14 +71,12 @@ SMS аутентификация использует только 2 endpoint'а
 }
 ```
 
-**Security Note:** Для предотвращения атак перебора пользователей, токен всегда возвращается в ответе, даже при ошибках. В случае ошибок возвращается зашифрованный фейковый токен с отдельным ключом шифрования, что делает невозможным различение валидных и невалидных запросов.
+To prevent user enumeration attacks, a token is always returned, even on errors.
 
 **HTTP Status Codes:**
 - `200` - Request processed (SMS sent if phone registered)
 - `400` - Invalid request/signature
 - `429` - Rate limited
-
-**Security Note:** SMS отправляется на валидные номера телефонов. Проверка существования пользователя в системе происходит только при верификации кода для предотвращения атак перебора номеров телефонов.
 
 ### 2. Verify SMS Code
 
@@ -94,11 +99,11 @@ SMS аутентификация использует только 2 endpoint'а
 }
 ```
 
-**Security Note:** При успешной верификации возвращается валидный тикет аутентификации. Если пользователь с указанным номером телефона не найден в системе, возвращается ошибка аутентификации.
+On successful verification, an authentication ticket is returned.
 
 **HTTP Status Codes:**
 - `200` - Authentication successful
-- `401` - Authentication failed (invalid code/session)
+- `473` - Authentication failed (invalid code/session)
 - `400` - Bad request
 
 ## Client Implementation Requirements
@@ -127,7 +132,7 @@ Handle these error scenarios:
 - Rate limited → Show retry timer with countdown
 - Network errors → Allow retry with exponential backoff
 
-**Security Note:** Для защиты приватности пользователей рекомендуется показывать общее сообщение типа "Если номер зарегистрирован, код отправлен". После получения успешного ответа с `token` переходите к экрану ввода кода.
+Show a generic message like "If the number is registered, a code has been sent".
 
 ## Configuration
 
@@ -137,20 +142,86 @@ The client needs access to:
 
 ## Rate Limits
 
-Default limits (configurable on server):
-- 5 SMS per phone per hour
-- 20 SMS per IP per hour
+Rate limiting is handled by veda-auth. Configure limits in veda-auth:
+- SMS per phone per hour
+- SMS per IP per hour
+- Maximum attempts per session
 
 ## Testing
 
-Для тестирования используйте номера телефонов, зарегистрированные в системе через AuthClient.
+For testing, use phone numbers registered in veda-auth.
 
-SMS codes visible in server logs when testing.
+SMS codes are handled by veda-auth - check veda-auth logs for development codes.
 
 ## Integration with Existing Auth
 
-SMS auth полностью совместим с основной системой аутентификации:
-- Возвращает тот же JSON формат, что и `auth.rs -> authenticate()`
-- Использует `AuthClient` для создания валидных tickets
-- Аутентификация происходит по номеру телефона через AuthClient
-- Можно использовать как **standalone** или в комбинации с другими методами
+SMS auth is fully compatible with the main authentication system:
+- Returns the same JSON format as `auth.rs -> authenticate()`
+- Uses veda-auth to create valid tickets
+- Phone-based authentication is handled by veda-auth
+- Can be used **standalone** or in combination with other methods
+
+## Dependencies
+
+### veda-auth Requirements
+
+veda-auth configuration:
+- veda-auth instance running and accessible from web API server
+- Phone number to user mappings in veda-auth user database
+- SMS provider configured (Megalabs, Twilio, etc.)
+- Rate limiting policies defined in veda-auth
+- `auth_url` property set in web API configuration
+
+### Client Dependencies
+
+Required libraries:
+- HMAC-SHA256 implementation (`crypto` module in Node.js, `crypto-js` in browser)
+- UUID generation library
+- Base64 encoding/decoding
+- HTTP client (fetch, axios, etc.)
+
+**Browser Example:**
+```html
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+<script>
+    function computeHmac(message, key) {
+        return CryptoJS.HmacSHA256(message, key).toString(CryptoJS.enc.Hex);
+    }
+</script>
+```
+
+**Node.js Example:**
+```javascript
+const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
+
+function computeHmac(message, key) {
+    return crypto.createHmac('sha256', key).update(message).digest('hex');
+}
+```
+
+## Security Considerations
+
+Security requirements:
+1. `client_secret`: Use strong secret (32+ random characters)
+2. HTTPS only: Never use SMS auth over unencrypted HTTP connections
+3. Timestamp validation: Ensure client and server clocks are synchronized
+4. Token handling: Treat tokens as sensitive data, never log or expose
+5. Rate limiting: Implement client-side rate limiting to prevent abuse
+
+Example configuration:
+```javascript
+const SMS_CONFIG = {
+    client_secret: process.env.SMS_CLIENT_SECRET, // From environment
+    api_base_url: 'https://api.example.com', // HTTPS only
+    max_retries: 3,
+    timeout: 30000
+};
+```
+
+Best practices:
+- Never hardcode `client_secret` in source code
+- Validate all user inputs (phone numbers, codes)
+- Implement proper error handling without information leakage
+- Use storage for authentication tokens
+- Implement session timeout and cleanup

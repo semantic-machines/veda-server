@@ -155,6 +155,7 @@ async fn main() -> std::io::Result<()> {
 
     info!("LISTEN {port}");
 
+    let port_for_bind = port.clone();
     let mut server_future = HttpServer::new(move || {
         let mut mfp = MultifactorProps::default();
         if let Ok(conf) = Ini::load_from_file("multifactor.ini") {
@@ -178,13 +179,23 @@ async fn main() -> std::io::Result<()> {
                 enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
                 client_secret: section.get("client_secret").expect("client_secret not found").to_string(),
                 max_time_drift: section.get("max_time_drift").unwrap_or("300").parse().unwrap_or(300),
+                rsa_key_path: section.get("rsa_key_path").map(|s| s.to_string()),
             }
         } else {
             SmsAuthConfig::default()
         };
 
-        // Create SMS authentication service - using veda-auth API
-        let sms_service = SmsAuthService::new(sms_config);
+        // Create SMS authentication service - using veda-auth API with RSA encryption
+        let sms_service = match SmsAuthService::new(sms_config) {
+            Ok(service) => {
+                info!("SMS service initialized with RSA encryption, key fingerprint: {}", service.get_public_key_fingerprint());
+                service
+            },
+            Err(e) => {
+                error!("Failed to initialize SMS service: {:?}", e);
+                panic!("SMS service initialization failed");
+            }
+        };
 
         let db = db_connector(&tt_config);
 
@@ -335,7 +346,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/").guard(guard::Post()).route(web::post().to(handle_post_request)))
             .service(Files::new("/", "./public").redirect_to_slash_directory().index_file("index.html"))
     })
-    .bind(format!("0.0.0.0:{port}"))?
+    .bind(format!("0.0.0.0:{}", port_for_bind))?
     .workers(workers)
     .run()
     .fuse();

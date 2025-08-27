@@ -1,11 +1,11 @@
 use crate::common::extract_addr;
 use actix_web::{web, HttpRequest, HttpResponse};
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use futures::lock::Mutex;
 use hex;
 use hmac::Hmac;
 use log::{error, info, warn};
 use rand::Rng;
+use rsa::{RsaPrivateKey, RsaPublicKey, Oaep, pkcs8::{DecodePrivateKey, EncodePublicKey}};
 use serde::{Deserialize, Serialize};
 use base64;
 use sha2::Sha256;
@@ -21,6 +21,7 @@ pub struct SmsAuthConfig {
     pub enabled: bool,
     pub client_secret: String,
     pub max_time_drift: u64,
+    pub rsa_key_path: Option<String>,  // Optional path to RSA private key file
 }
 
 impl Default for SmsAuthConfig {
@@ -29,6 +30,7 @@ impl Default for SmsAuthConfig {
             enabled: false,
             client_secret: "default-secret-key".to_string(),
             max_time_drift: 300,
+            rsa_key_path: None,
         }
     }
 }
@@ -108,13 +110,46 @@ pub enum SmsError {
 // Main SMS authentication service - using veda-auth API
 pub struct SmsAuthService {
     config: SmsAuthConfig,
+    rsa_private_key: RsaPrivateKey,
+    rsa_public_key: RsaPublicKey,
 }
 
 impl SmsAuthService {
-    pub fn new(config: SmsAuthConfig) -> Self {
-        Self {
+    pub fn new(config: SmsAuthConfig) -> Result<Self, SmsError> {
+        // Load or generate RSA keys
+        let (private_key, public_key) = if let Some(key_path) = &config.rsa_key_path {
+            Self::load_rsa_keys(key_path)?
+        } else {
+            Self::generate_rsa_keys()?
+        };
+        
+        Ok(Self {
             config,
-        }
+            rsa_private_key: private_key,
+            rsa_public_key: public_key,
+        })
+    }
+    
+    fn generate_rsa_keys() -> Result<(RsaPrivateKey, RsaPublicKey), SmsError> {
+        let mut rng = rand::thread_rng();
+        let private_key = RsaPrivateKey::new(&mut rng, 2048)
+            .map_err(|_| SmsError::EncryptionError)?;
+        let public_key = RsaPublicKey::from(&private_key);
+        
+        info!("Generated new RSA-2048 keys for SMS session encryption");
+        Ok((private_key, public_key))
+    }
+    
+    fn load_rsa_keys(key_path: &str) -> Result<(RsaPrivateKey, RsaPublicKey), SmsError> {
+        let key_data = std::fs::read_to_string(key_path)
+            .map_err(|_| SmsError::InvalidKey)?;
+        
+        let private_key = RsaPrivateKey::from_pkcs8_pem(&key_data)
+            .map_err(|_| SmsError::InvalidKey)?;
+        let public_key = RsaPublicKey::from(&private_key);
+        
+        info!("Loaded RSA keys from {}", key_path);
+        Ok((private_key, public_key))
     }
 
 
@@ -190,23 +225,20 @@ impl SmsAuthService {
     }
 
     fn encrypt_session_data(&self, session_data: &EncryptedSessionData) -> Result<EncryptedSessionToken, SmsError> {
-        // Create encryption key from client_secret
-        let key = self.derive_encryption_key();
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|_| SmsError::EncryptionError)?;
-
-        // Generate random nonce
-        let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
+        let mut rng = rand::thread_rng();
+        let padding = Oaep::new::<Sha256>();
+        
         // Serialize session data
         let plaintext = serde_json::to_vec(session_data)
             .map_err(|_| SmsError::EncryptionError)?;
 
-        // Encrypt
-        let ciphertext = cipher.encrypt(nonce, plaintext.as_slice())
+        // Encrypt with RSA public key
+        let ciphertext = self.rsa_public_key.encrypt(&mut rng, padding, &plaintext)
             .map_err(|_| SmsError::EncryptionError)?;
+
+        // Generate random nonce for additional security (not used for encryption but for token uniqueness)
+        let mut nonce_bytes = [0u8; 16];
+        rand::thread_rng().fill(&mut nonce_bytes);
 
         Ok(EncryptedSessionToken {
             data: base64::encode(ciphertext),
@@ -215,25 +247,14 @@ impl SmsAuthService {
     }
 
     fn decrypt_session_data(&self, token: &EncryptedSessionToken) -> Result<EncryptedSessionData, SmsError> {
-        // Create encryption key from client_secret
-        let key = self.derive_encryption_key();
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|_| SmsError::DecryptionError)?;
-
-        // Decode nonce and ciphertext
-        let nonce_bytes = base64::decode(&token.nonce)
-            .map_err(|_| SmsError::InvalidTokenFormat)?;
+        let padding = Oaep::new::<Sha256>();
+        
+        // Decode ciphertext
         let ciphertext = base64::decode(&token.data)
             .map_err(|_| SmsError::InvalidTokenFormat)?;
 
-        if nonce_bytes.len() != 12 {
-            return Err(SmsError::InvalidTokenFormat);
-        }
-
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        // Decrypt
-        let plaintext = cipher.decrypt(nonce, ciphertext.as_slice())
+        // Decrypt with RSA private key
+        let plaintext = self.rsa_private_key.decrypt(padding, &ciphertext)
             .map_err(|_| SmsError::DecryptionError)?;
 
         // Deserialize session data
@@ -243,40 +264,47 @@ impl SmsAuthService {
         Ok(session_data)
     }
 
-    fn derive_encryption_key(&self) -> [u8; 32] {
+    // RSA keys provide cryptographic security, no need for additional key derivation
+    // Keys are either loaded from file or generated at startup
+    pub fn get_public_key_fingerprint(&self) -> String {
         use sha2::Digest;
         let mut hasher = sha2::Sha256::default();
         
-        // Base prefix
-        hasher.update(b"SMS_ENCRYPTION_");
-        
-        // Main secret
-        hasher.update(self.config.client_secret.as_bytes());
-        
-        // Time drift setting - affects time validation
-        hasher.update(self.config.max_time_drift.to_le_bytes());
-        
-        hasher.finalize().into()
+        // Create fingerprint from public key for logging/debugging
+        if let Ok(der) = self.rsa_public_key.to_public_key_der() {
+            hasher.update(der.as_bytes());
+            hex::encode(&hasher.finalize()[..8])  // First 8 bytes as hex
+        } else {
+            "unknown".to_string()
+        }
     }
 
     // Generate fake encrypted token for error responses
     fn create_fake_token(&self) -> Result<String, SmsError> {
-        // Create fake session data that looks realistic
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        
+        // Generate realistic random fake data
+        let fake_phone = format!("799{:08}", rng.gen_range(10000000..99999999));
+        let fake_nonce = format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}", 
+            rng.gen::<u32>(), rng.gen::<u16>(), rng.gen::<u16>(), 
+            rng.gen::<u16>(), rng.gen::<u64>() & 0xffffffffffff);
+        let fake_salt = format!("{:032x}", rng.gen::<u128>());
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let fake_timestamp = current_time - rng.gen_range(0..300); // Random time within last 5 minutes
+        
         let fake_session = EncryptedSessionData {
-            phone: "79999999999".to_string(),
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            request_nonce: "fake-nonce-uuid".to_string(),
-            request_salt: "fake123456789fake".to_string(),
-            request_timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            phone: fake_phone,
+            created_at: current_time,
+            request_nonce: fake_nonce,
+            request_salt: fake_salt,
+            request_timestamp: fake_timestamp,
         };
 
-        // Encrypt fake session data
+        // Encrypt fake session data with RSA
         let encrypted_token = self.encrypt_session_data(&fake_session)?;
         let token_string = serde_json::to_string(&encrypted_token)
             .map_err(|_| SmsError::EncryptionError)?;
@@ -400,7 +428,7 @@ pub async fn salted_sms_request(
         warn!("Salted verification failed from {:?}: {:?}", ip_addr, e);
         // Return fake token to prevent user enumeration
         let fake_token = sms_service.create_fake_token().unwrap_or_else(|_| "error".to_string());
-        return Ok(HttpResponse::BadRequest().json(SmsAuthResponse {
+        return Ok(HttpResponse::Ok().json(SmsAuthResponse {
             token: fake_token,
         }));
     }
@@ -417,7 +445,7 @@ pub async fn salted_sms_request(
             error!("SMS request failed: {:?}", e);
             // Return fake token to prevent user enumeration
             let fake_token = sms_service.create_fake_token().unwrap_or_else(|_| "error".to_string());
-            Ok(HttpResponse::BadRequest().json(SmsAuthResponse {
+            Ok(HttpResponse::Ok().json(SmsAuthResponse {
                 token: fake_token,
             }))
         }
