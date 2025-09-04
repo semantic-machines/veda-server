@@ -250,16 +250,31 @@ pub fn create_sms_provider(config: &SmsProviderConfig) -> Option<Box<dyn SmsProv
 pub struct MobileAuth;
 
 impl MobileAuth {
+    // Check if login is a valid phone number (with or without + prefix)
+    fn is_valid_phone_number(login: &str) -> bool {
+        // Count digits in the login
+        let digit_count = login.chars().filter(|c| c.is_numeric()).count();
+
+        // Check if format is valid
+        let valid_format = if login.starts_with('+') {
+            // After + should be only digits
+            login.chars().skip(1).all(|c| c.is_numeric()) && digit_count >= 10
+        } else {
+            // Should be only digits
+            login.chars().all(|c| c.is_numeric()) && digit_count >= 10
+        };
+
+        valid_format
+    }
+
     // Check if this is a valid SMS authentication request
     pub fn is_sms_request(login: &str, password: &str) -> bool {
-        // Check if login is phone number (starts with + and contains only digits)
-        let login_is_phone = login.starts_with('+') && 
-                            login.len() > 10 && 
-                            login.chars().skip(1).all(|c| c.is_numeric());
-        
+        // Check if login is phone number
+        let login_is_phone = Self::is_valid_phone_number(login);
+
         // Check if password is empty
         let password_empty = password.is_empty() || password == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        
+
         login_is_phone && password_empty
     }
 
@@ -271,9 +286,9 @@ impl MobileAuth {
             return false;
         }
 
-        // Check if login is in digital format (starts with +)
-        let login_is_digital = login.starts_with('+') && login.chars().skip(1).all(|c| c.is_numeric());
-        if !login_is_digital {
+        // Check if login is a valid phone number
+        let login_is_valid_phone = Self::is_valid_phone_number(login);
+        if !login_is_valid_phone {
             return false;
         }
 

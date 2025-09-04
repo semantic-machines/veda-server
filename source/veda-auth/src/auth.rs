@@ -120,9 +120,11 @@ impl<'a> AuthWorkPlace<'a> {
                 return (false, ResultCode::Ok);
             }
 
-            if user_login.to_lowercase() != self.login.to_lowercase() {
-                error!("user login {} not equal to requested login {}", user_login, self.login);
-                return (false, ResultCode::Ok);
+            if !MobileAuth::is_sms_request(self.login, self.password) {
+                if user_login.to_lowercase() != self.login.to_lowercase() {
+                    error!("user login {} not equal to requested login {}", user_login, self.login);
+                    return (false, ResultCode::Ok);
+                }
             }
 
             if let Some(mut person) = self.backend.get_individual_s(&user_id) {
@@ -130,12 +132,12 @@ impl<'a> AuthWorkPlace<'a> {
 
                 // Check for SMS authentication request (phone number + empty password)
                 if MobileAuth::is_sms_request(self.login, self.password) {
-                    let res = self.request_sms_authentication(&mut account, &person);
+                    let res = self.request_sms_authentication(&mut account, &person, &self.login);
                     return (true, res);
                 }
                 
                 // Check for mobile authentication first
-                if MobileAuth::is_sms_authentication(self.login, self.password, self.secret, &mut account) {
+                if MobileAuth::is_sms_authentication(&self.login, self.password, self.secret, &mut account) {
                     let res = self.handle_sms_authentication(ticket, &person);
                     return if res != ResultCode::Ok {
                         (false, res)
@@ -436,12 +438,12 @@ impl<'a> AuthWorkPlace<'a> {
     }
 
     // Request SMS authentication - generate and send SMS code
-    pub fn request_sms_authentication(&mut self, _account: &mut Individual, person: &Individual) -> ResultCode {
-        info!("Requesting SMS authentication for user: {}, login: {}", person.get_id(), self.login);
+    pub fn request_sms_authentication(&mut self, _account: &mut Individual, person: &Individual, normalized_login: &str) -> ResultCode {
+        info!("Requesting SMS authentication for user: {}, login: {}", person.get_id(), normalized_login);
         
         // Check if this is a valid SMS authentication request
-        if !MobileAuth::is_sms_request(self.login, self.password) {
-            error!("Invalid SMS request: login = {}, password empty = {}", self.login, self.password.is_empty());
+        if !MobileAuth::is_sms_request(normalized_login, self.password) {
+            error!("Invalid SMS request: login = {}, password empty = {}", normalized_login, self.password.is_empty());
             return ResultCode::InvalidPassword;
         }
 
@@ -478,9 +480,9 @@ impl<'a> AuthWorkPlace<'a> {
         }
 
         // Send SMS
-        let send_result = MobileAuth::send_sms_code(&self.login, &sms_code, self.conf.sms_provider.as_ref());
+        let send_result = MobileAuth::send_sms_code(normalized_login, &sms_code, self.conf.sms_provider.as_ref());
         if send_result != ResultCode::Ok {
-            error!("Failed to send SMS to {}, user = {}", self.login, person.get_id());
+            error!("Failed to send SMS to {}, user = {}", normalized_login, person.get_id());
             // Remove secret if SMS sending failed
             self.credential.remove("v-s:secret");
             self.credential.remove("v-s:SecretDateFrom");
@@ -492,7 +494,7 @@ impl<'a> AuthWorkPlace<'a> {
         self.user_stat.attempt_change_pass += 1;
         self.user_stat.last_attempt_change_pass_date = now;
 
-        info!("SMS code sent successfully to {}, user = {}", self.login, person.get_id());
+        info!("SMS code sent successfully to {}, user = {}", normalized_login, person.get_id());
         ResultCode::Ok
     }
 
