@@ -1,0 +1,24 @@
+[package]
+name = "veda-sms-sender"
+version = "0.1.0"
+authors = ["Valeriy Bushenev <ValeriyBushenev@gmail.com>"]
+edition = "2021"
+
+[[bin]]
+name = "veda-sms-sender"
+path = "src/main.rs"
+
+[dependencies]
+log = "0.4"
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+configparser = "3.0"
+version = "3.0.0"
+git-version = "0.3.9"
+
+v_common = { package = "v-common", version = "=0.10.6" }
+
+[profile.release]
+opt-level = 1
