@@ -3,6 +3,15 @@ use std::path::Path;
 use configparser::ini::Ini;
 use v_individual_model::onto::individual::Individual;
 use v_common::v_api::common_type::ResultCode;
+use lazy_static::lazy_static;
+
+// Shared tokio runtime for SMS operations (fallback for non-tokio environments)
+lazy_static! {
+    static ref SMS_RUNTIME: tokio::runtime::Runtime = {
+        tokio::runtime::Runtime::new()
+            .expect("Failed to create SMS runtime")
+    };
+}
 
 // SMS provider configuration
 #[derive(Debug, Clone)]
@@ -37,130 +46,10 @@ impl Default for SmsProviderConfig {
     }
 }
 
-// SMS provider trait and implementation
-pub trait SmsProvider: Send + Sync {
-    fn send_sms(&self, phone: &str, message: &str) -> Result<(), SmsError>;
-}
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum SmsError {
-    InvalidPhone(String),
-    InvalidInput(String),
-    NetworkError(String),
-    ProviderError(String),
-}
 
-pub struct MegalabsProvider {
-    server: String,
-    user: String,
-    password: String,
-    from: String,
-    message_size_limit: usize,
-    client: reqwest::Client,
-}
 
-impl MegalabsProvider {
-    pub fn new(server: String, user: String, password: String, from: String, message_size_limit: usize) -> Self {
-        Self {
-            server,
-            user,
-            password,
-            from,
-            message_size_limit,
-            client: reqwest::Client::new(),
-        }
-    }
-}
 
-impl SmsProvider for MegalabsProvider {
-    fn send_sms(&self, phone: &str, message: &str) -> Result<(), SmsError> {
-        // Check message size limit
-        if message.len() > self.message_size_limit {
-            return Err(SmsError::InvalidInput("Message too long".to_string()));
-        }
-
-        info!("Sending SMS to {} via Megalabs API", phone);
-        
-        // Parse phone number to integer (as per Megalabs API requirement)
-        let phone_number: i64 = phone.parse().map_err(|_| {
-            SmsError::InvalidInput("Invalid phone number format".to_string())
-        })?;
-
-        // Prepare request payload
-        let payload = serde_json::json!({
-            "from": self.from,
-            "to": phone_number,
-            "message": message
-        });
-
-        // Make HTTP request to Megalabs API
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            SmsError::NetworkError(format!("Failed to create runtime: {}", e))
-        })?;
-
-        let response = rt.block_on(async {
-            self.client
-                .post(&self.server)
-                .basic_auth(&self.user, Some(&self.password))
-                .json(&payload)
-                .send()
-                .await
-        });
-
-        match response {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    // Parse response JSON to check internal status
-                    let response_body = rt.block_on(async {
-                        resp.text().await
-                    });
-                    
-                    match response_body {
-                        Ok(body) => {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                                // Check Megalabs internal status: result.status.code should be 0
-                                if let Some(result) = json.get("result") {
-                                    if let Some(status) = result.get("status") {
-                                        if let Some(code) = status.get("code") {
-                                            if code.as_i64() == Some(0) {
-                                                info!("SMS sent successfully to {}: {}", phone, body);
-                                                return Ok(());
-                                            } else {
-                                                error!("Megalabs API internal error - code: {}, response: {}", code, body);
-                                                return Err(SmsError::ProviderError(format!("SMS service internal error: {}", body)));
-                                            }
-                                        }
-                                    }
-                                }
-                                error!("Megalabs API unexpected response format: {}", body);
-                                Err(SmsError::ProviderError(format!("Unexpected API response: {}", body)))
-                            } else {
-                                error!("Failed to parse Megalabs API response: {}", body);
-                                Err(SmsError::ProviderError(format!("Invalid API response: {}", body)))
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to read Megalabs API response: {}", e);
-                            Err(SmsError::NetworkError("Failed to read API response".to_string()))
-                        }
-                    }
-                } else {
-                    let status = resp.status();
-                    let error_body = rt.block_on(async {
-                        resp.text().await.unwrap_or_else(|_| "Unknown error".to_string())
-                    });
-                    error!("Megalabs API HTTP error - status: {}, response: {}", status, error_body);
-                    Err(SmsError::NetworkError(format!("SMS service HTTP request error. Status: {}, response: {}", status, error_body)))
-                }
-            }
-            Err(e) => {
-                error!("Failed to send SMS request: {}", e);
-                Err(SmsError::NetworkError(format!("Network error: {}", e)))
-            }
-        }
-    }
-}
 
 // Structure for reading SMS configuration from ini file (unused, kept for reference)
 #[derive(Debug, Default)]
@@ -223,28 +112,6 @@ pub fn read_sms_config_from_ini(ini_path: &str) -> Option<SmsProviderConfig> {
     }
 }
 
-// Helper function to create SMS provider from configuration
-pub fn create_sms_provider(config: &SmsProviderConfig) -> Option<Box<dyn SmsProvider>> {
-    if !config.enabled {
-        return None;
-    }
-
-    match &config.provider_type {
-        SmsProviderType::Megalabs { server, user, password, from, message_size_limit } => {
-            if server.is_empty() || user.is_empty() || password.is_empty() || from.is_empty() {
-                warn!("SMS provider configuration is incomplete, SMS disabled");
-                return None;
-            }
-            Some(Box::new(MegalabsProvider::new(
-                server.clone(),
-                user.clone(),
-                password.clone(),
-                from.clone(),
-                *message_size_limit,
-            )))
-        }
-    }
-}
 
 // Mobile authentication helper functions
 pub struct MobileAuth;
@@ -267,19 +134,22 @@ impl MobileAuth {
         valid_format
     }
 
-    // Check if this is a valid SMS authentication request
-    pub fn is_sms_request(login: &str, password: &str) -> bool {
+    // Check if this is a request to send SMS code (first step: phone + empty password + empty secret)
+    pub fn is_sms_code_request(login: &str, password: &str, secret: &str) -> bool {
         // Check if login is phone number
         let login_is_phone = Self::is_valid_phone_number(login);
 
         // Check if password is empty
         let password_empty = password.is_empty() || password == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-        login_is_phone && password_empty
+        // Check if secret is empty (this is the key difference from verification step)
+        let secret_empty = secret.is_empty();
+
+        login_is_phone && password_empty && secret_empty
     }
 
-    // Check if this is a mobile authentication request
-    pub fn is_sms_authentication(login: &str, password: &str, secret: &str, account: &mut Individual) -> bool {
+    // Check if this is SMS code verification request
+    pub fn is_sms_code_verification(login: &str, password: &str, secret: &str, account: &mut Individual) -> bool {
         // Check if account has mobile auth origin
         let auth_origin = account.get_first_literal("v-s:authOrigin").unwrap_or_default();
         if auth_origin.to_uppercase() != "MOBILE" {
@@ -313,33 +183,42 @@ impl MobileAuth {
         }
     }
 
-    // Send SMS code using configured provider
-    pub fn send_sms_code(phone: &str, code: &str, sms_provider: Option<&SmsProviderConfig>) -> ResultCode {
+
+    // Send SMS code asynchronously (non-blocking)
+    pub fn send_sms_code(phone: &str, code: &str, sms_provider: Option<SmsProviderConfig>) -> ResultCode {
         // Normalize phone number
         let normalized_phone = Self::normalize_phone_number(phone);
         
         // Create SMS message
         let message = format!("Ваш код для входа: {}. Никому его не сообщайте.", code);
         
-        info!("Sending SMS to {}: {}", normalized_phone, message);
+        info!("Scheduling SMS to {} using current runtime", normalized_phone);
         
-        // Check if SMS provider is configured
-        if let Some(sms_config) = sms_provider {
-            if let Some(provider) = create_sms_provider(sms_config) {
-                match provider.send_sms(&normalized_phone, &message) {
-                    Ok(()) => {
-                        info!("SMS successfully sent to {}", normalized_phone);
-                        ResultCode::Ok
-                    }
-                    Err(e) => {
-                        error!("Failed to send SMS to {}: {:?}", normalized_phone, e);
-                        ResultCode::InternalServerError
-                    }
+        // Check if SMS provider is configured and enabled
+        if let Some(sms_config) = sms_provider.filter(|config| config.enabled) {
+            // Clone data for background task
+            let phone_clone = normalized_phone.clone();
+            let message_clone = message.clone();
+            
+            // Try to use current runtime handle (most efficient)
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    // We're already in a tokio runtime - use current handle
+                    handle.spawn(async move {
+                        Self::send_sms_pure_async(&phone_clone, &message_clone, &sms_config).await;
+                    });
+                    info!("SMS task spawned on current runtime for {}", normalized_phone);
                 }
-            } else {
-                error!("SMS provider not properly configured");
-                ResultCode::InternalServerError
+                Err(_) => {
+                    // No current runtime - use our fallback runtime
+                    SMS_RUNTIME.spawn(async move {
+                        Self::send_sms_pure_async(&phone_clone, &message_clone, &sms_config).await;
+                    });
+                    info!("SMS task spawned on fallback runtime for {}", normalized_phone);
+                }
             }
+            
+            ResultCode::Ok
         } else {
             // SMS not configured, log the code for debugging
             warn!("SMS provider not configured, logging code: {}", code);
@@ -347,4 +226,93 @@ impl MobileAuth {
             ResultCode::Ok
         }
     }
+
+
+    // Pure async SMS sending without any blocking operations
+    async fn send_sms_pure_async(phone: &str, message: &str, sms_config: &SmsProviderConfig) {
+        match &sms_config.provider_type {
+            SmsProviderType::Megalabs { server, user, password, from, message_size_limit } => {
+                if server.is_empty() || user.is_empty() || password.is_empty() || from.is_empty() {
+                    error!("SMS provider configuration is incomplete (async)");
+                    return;
+                }
+
+                // Check message size limit
+                if message.len() > *message_size_limit {
+                    error!("Message too long for SMS (async): {} > {}", message.len(), message_size_limit);
+                    return;
+                }
+
+                info!("Sending SMS to {} via Megalabs API (pure async)", phone);
+                
+                // Parse phone number to integer
+                let phone_number: i64 = match phone.parse() {
+                    Ok(num) => num,
+                    Err(_) => {
+                        error!("Invalid phone number format (async): {}", phone);
+                        return;
+                    }
+                };
+
+                // Prepare request payload
+                let payload = serde_json::json!({
+                    "from": from,
+                    "to": phone_number,
+                    "message": message
+                });
+
+                // Create HTTP client
+                let client = reqwest::Client::new();
+
+                // Make PURE async HTTP request (no block_on anywhere!)
+                match client
+                    .post(server)
+                    .basic_auth(user, Some(password))
+                    .json(&payload)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            // Parse response JSON to check internal status
+                            match resp.text().await {
+                                Ok(body) => {
+                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                        // Check Megalabs internal status: result.status.code should be 0
+                                        if let Some(result) = json.get("result") {
+                                            if let Some(status) = result.get("status") {
+                                                if let Some(code) = status.get("code") {
+                                                    if code.as_i64() == Some(0) {
+                                                        info!("SMS sent successfully to {} (pure async): {}", phone, body);
+                                                        return;
+                                                    } else {
+                                                        error!("Megalabs API internal error (async) - code: {}, response: {}", code, body);
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        error!("Megalabs API unexpected response format (async): {}", body);
+                                    } else {
+                                        error!("Failed to parse Megalabs API response (async): {}", body);
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to read Megalabs API response (async): {}", e);
+                                }
+                            }
+                        } else {
+                            let status = resp.status();
+                            let error_body = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                            error!("Megalabs API HTTP error (async) - status: {}, response: {}", status, error_body);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to send SMS request (async): {}", e);
+                    }
+                }
+            }
+        }
+    }
 }
+

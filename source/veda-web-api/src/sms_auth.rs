@@ -5,7 +5,7 @@ use hex;
 use hmac::Hmac;
 use log::{error, info, warn};
 use rand::Rng;
-use rsa::{RsaPrivateKey, RsaPublicKey, Oaep, pkcs8::{DecodePrivateKey, EncodePublicKey}};
+use rsa::{RsaPrivateKey, RsaPublicKey, Oaep, pkcs8::{DecodePrivateKey, EncodePublicKey}, traits::PublicKeyParts};
 use serde::{Deserialize, Serialize};
 use base64;
 use sha2::Sha256;
@@ -228,38 +228,85 @@ impl SmsAuthService {
         let mut rng = rand::thread_rng();
         let padding = Oaep::new::<Sha256>();
         
+        info!("🔐 Starting encryption for session data...");
+        let encryption_fingerprint = self.get_public_key_fingerprint();
+        info!("🔑 Encryption RSA key fingerprint: {}", encryption_fingerprint);
+        info!("Session data: {:?}", session_data);
+        
         // Serialize session data
         let plaintext = serde_json::to_vec(session_data)
-            .map_err(|_| SmsError::EncryptionError)?;
+            .map_err(|e| {
+                error!("❌ Failed to serialize session data: {:?}", e);
+                SmsError::EncryptionError
+            })?;
+        info!("✅ Serialized to plaintext, length: {}", plaintext.len());
 
         // Encrypt with RSA public key
         let ciphertext = self.rsa_public_key.encrypt(&mut rng, padding, &plaintext)
-            .map_err(|_| SmsError::EncryptionError)?;
+            .map_err(|e| {
+                error!("❌ RSA encryption failed: {:?}", e);
+                error!("Plaintext length: {}", plaintext.len());
+                error!("RSA key size: {} bits", self.rsa_public_key.size() * 8);
+                SmsError::EncryptionError
+            })?;
+        info!("✅ RSA encryption successful, ciphertext length: {}", ciphertext.len());
 
         // Generate random nonce for additional security (not used for encryption but for token uniqueness)
         let mut nonce_bytes = [0u8; 16];
         rand::thread_rng().fill(&mut nonce_bytes);
 
-        Ok(EncryptedSessionToken {
-            data: base64::encode(ciphertext),
+        let token = EncryptedSessionToken {
+            data: base64::encode(&ciphertext),
             nonce: base64::encode(nonce_bytes),
-        })
+        };
+        
+        info!("✅ Created encrypted token - data length: {}, nonce length: {}", 
+              token.data.len(), token.nonce.len());
+
+        Ok(token)
     }
 
     fn decrypt_session_data(&self, token: &EncryptedSessionToken) -> Result<EncryptedSessionData, SmsError> {
         let padding = Oaep::new::<Sha256>();
         
+        info!("🔍 Decrypting token - data: '{}', nonce: '{}'", token.data, token.nonce);
+        
         // Decode ciphertext
+        info!("📥 Step 1: Decoding base64 data...");
         let ciphertext = base64::decode(&token.data)
-            .map_err(|_| SmsError::InvalidTokenFormat)?;
+            .map_err(|e| {
+                error!("❌ Base64 decode failed: {:?}", e);
+                error!("Data that failed to decode: '{}'", token.data);
+                SmsError::InvalidTokenFormat
+            })?;
+        info!("✅ Base64 decoded successfully, ciphertext length: {}", ciphertext.len());
 
         // Decrypt with RSA private key
+        info!("🔐 Step 2: RSA decryption...");
+        let current_fingerprint = self.get_public_key_fingerprint();
+        info!("RSA key fingerprint: {}", current_fingerprint);
+        warn!("⚠️  ВАЖНО: Убедитесь что этот fingerprint такой же как при создании токена!");
         let plaintext = self.rsa_private_key.decrypt(padding, &ciphertext)
-            .map_err(|_| SmsError::DecryptionError)?;
+            .map_err(|e| {
+                error!("❌ RSA decryption failed: {:?}", e);
+                error!("Ciphertext length: {}", ciphertext.len());
+                error!("Expected RSA key size: {} bits", self.rsa_private_key.size() * 8);
+                SmsError::DecryptionError
+            })?;
+        info!("✅ RSA decryption successful, plaintext length: {}", plaintext.len());
 
         // Deserialize session data
+        info!("📄 Step 3: JSON deserialization...");
+        let plaintext_str = String::from_utf8_lossy(&plaintext);
+        info!("Plaintext content: {}", plaintext_str);
+        
         let session_data: EncryptedSessionData = serde_json::from_slice(&plaintext)
-            .map_err(|_| SmsError::DecryptionError)?;
+            .map_err(|e| {
+                error!("❌ JSON deserialization failed: {:?}", e);
+                error!("Plaintext that failed: '{}'", plaintext_str);
+                SmsError::DecryptionError
+            })?;
+        info!("✅ JSON deserialization successful");
 
         Ok(session_data)
     }
@@ -343,8 +390,12 @@ impl SmsAuthService {
                 // Encrypt session data and serialize to string
                 let encrypted_token = self.encrypt_session_data(&session_data)?;
                 let token_string = serde_json::to_string(&encrypted_token)
-                    .map_err(|_| SmsError::EncryptionError)?;
+                    .map_err(|e| {
+                        error!("❌ Failed to serialize encrypted token: {:?}", e);
+                        SmsError::EncryptionError
+                    })?;
 
+                info!("🎯 Final token for client: '{}'", token_string);
                 Ok(token_string)
             },
             Err(e) => {
@@ -361,11 +412,25 @@ impl SmsAuthService {
         ip_addr: Option<std::net::IpAddr>,
         auth_client: &Mutex<AuthClient>,
     ) -> Result<serde_json::Value, SmsError> {
-        // Parse and decrypt the token
-        let token: EncryptedSessionToken = serde_json::from_str(encrypted_token)
-            .map_err(|_| SmsError::InvalidTokenFormat)?;
+        info!("=== DEBUG: Starting verify_auth_code ===");
+        info!("Token length: {}", encrypted_token.len());
+        info!("Token content: {}", encrypted_token);
+        info!("Code: {}", code);
         
+        // Parse the encrypted token - handle both direct object and JSON string
+        let token: EncryptedSessionToken = serde_json::from_str(encrypted_token)
+            .map_err(|e| {
+                error!("❌ Failed to parse encrypted token as JSON: {:?}", e);
+                error!("Token content that failed: {}", encrypted_token);
+                SmsError::InvalidTokenFormat
+            })?;
+            
+        info!("✅ Successfully parsed token - data length: {}, nonce length: {}", 
+              token.data.len(), token.nonce.len());
+        
+        info!("🔓 Starting decryption process...");
         let session_data = self.decrypt_session_data(&token)?;
+        info!("✅ Successfully decrypted session data for phone: {}", session_data.phone);
         
         // Check session expiry (5 minutes default)
         let now = SystemTime::now()
@@ -436,7 +501,8 @@ pub async fn salted_sms_request(
     // Request SMS code via veda-auth
     match sms_service.request_auth_code(&data, ip_addr, &auth_client).await {
         Ok(token) => {
-            info!("SMS request processed for {} from {:?}", data.phone, ip_addr);
+            info!("✅ SMS request processed for {} from {:?}", data.phone, ip_addr);
+            info!("📤 Sending token to client: '{}'", token);
             Ok(HttpResponse::Ok().json(SmsAuthResponse {
                 token,
             }))
@@ -459,6 +525,11 @@ pub async fn verify_sms_auth(
     auth_client: web::Data<Mutex<AuthClient>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let ip_addr = extract_addr(&req);
+    
+    info!("🌐 HTTP verify_sms_auth called from {:?}", ip_addr);
+    info!("📋 Request data: token length = {}, code = '{}'", 
+          data.token.len(), data.code);
+    info!("📝 Full token received: '{}'", data.token);
 
     match sms_service.verify_auth_code(
         &data.token,

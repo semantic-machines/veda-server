@@ -78,7 +78,7 @@ impl Default for AuthConf {
             denied_password_expired_notification_template: None,
             check_ticket_ip: true,
             // SMS default values
-            sms_rate_limit_seconds: 60,
+            sms_rate_limit_seconds: 20,
             sms_daily_limit: 5,
             sms_code_min: 100_000,
             sms_code_max: 999_999,
