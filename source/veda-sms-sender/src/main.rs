@@ -6,6 +6,7 @@ use configparser::ini::Ini;
 use v_common::init_module_log;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_inner_binobj_as_individual, init_log, Module, PrepareError};
+use v_common::module::ticket::Ticket;
 use v_common::module::veda_backend::Backend;
 use v_common::module::veda_module::VedaQueueModule;
 use v_common::onto::individual::Individual;
@@ -101,7 +102,7 @@ struct SmsSenderModule {
     sms_provider: Option<SmsProviderConfig>,
     module_info: ModuleInfo,
     backend: Backend,
-    sys_ticket: String,
+    sys_ticket: Ticket,
 }
 
 impl VedaQueueModule for SmsSenderModule {
@@ -110,17 +111,16 @@ impl VedaQueueModule for SmsSenderModule {
     }
 
     fn prepare(&mut self, queue_element: &mut Individual) -> Result<bool, PrepareError> {
-        let op_id = queue_element.get_first_integer("op_id").unwrap_or_default();
-        let event_id = queue_element.get_first_literal("event_id").unwrap_or_default();
-        
-        // Check if the queue element was created by a user with sys_ticket
-        let user_uri = queue_element.get_first_literal("user_uri").unwrap_or_default();
-        if user_uri != self.sys_ticket {
-            info!("SMS request rejected: user {} does not have sys_ticket, required: {}", user_uri, self.sys_ticket);
-            return Ok(true);
-        }
-
         if let Some(sms_request) = self.extract_sms_request(queue_element) {
+            let event_id = queue_element.get_first_literal("event_id").unwrap_or_default();
+
+            // Check if the queue element was created by a user with sys_ticket
+            let user_uri = queue_element.get_first_literal("user_uri").unwrap_or_default();
+            if user_uri != self.sys_ticket.user_uri {
+                info!("SMS request rejected: user {} does not have sys_ticket, required: {}", user_uri, self.sys_ticket.id);
+                return Ok(false);
+            }
+
             info!("Processing SMS request for phone: {}", sms_request.phone);
             
             // Send SMS synchronously and update status immediately
@@ -134,6 +134,7 @@ impl VedaQueueModule for SmsSenderModule {
                 self.update_sms_status(&sms_request.individual_id, false, "SMS provider not configured", &event_id);
             }
         }
+        let op_id = queue_element.get_first_integer("op_id").unwrap_or_default();
 
         if let Err(e) = self.module_info.put_info(op_id, op_id) {
             error!("failed to write module_info, op_id = {}, err = {:?}", op_id, e);
@@ -169,7 +170,9 @@ impl SmsSenderModule {
             let cmd = IndvOp::from_i64(queue_element.get_first_integer("cmd")?);
 
             let mut new_state = Individual::default();
-            get_inner_binobj_as_individual(queue_element, "new_state", &mut new_state);
+            if !get_inner_binobj_as_individual(queue_element, "new_state", &mut new_state){
+                return None;
+            }
 
             // Проверяем, что это индивид для отправки SMS
             if cmd != IndvOp::Remove && new_state.any_exists("rdf:type", &["v-s:Sms"]) {
@@ -249,24 +252,24 @@ impl SmsSenderModule {
                                                         info!("{}", success_msg);
                                                         return (true, success_msg);
                                                     } else {
-                                                        let error_msg = format!("Megalabs API internal error - code: {}, response: {}", code, body);
+                                                        let error_msg = format!("API internal error - code: {}, response: {}", code, body);
                                                         error!("{}", error_msg);
                                                         return (false, error_msg);
                                                     }
                                                 }
                                             }
                                         }
-                                        let error_msg = format!("Megalabs API unexpected response format: {}", body);
+                                        let error_msg = format!("API unexpected response format: {}", body);
                                         error!("{}", error_msg);
                                         (false, error_msg)
                                     } else {
-                                        let error_msg = format!("Failed to parse Megalabs API response: {}", body);
+                                        let error_msg = format!("Failed to parse API response: {}", body);
                                         error!("{}", error_msg);
                                         (false, error_msg)
                                     }
                                 }
                                 Err(e) => {
-                                    let error_msg = format!("Failed to read Megalabs API response: {}", e);
+                                    let error_msg = format!("Failed to read API response: {}", e);
                                     error!("{}", error_msg);
                                     (false, error_msg)
                                 }
@@ -274,7 +277,7 @@ impl SmsSenderModule {
                         } else {
                             let status = resp.status();
                             let error_body = resp.text().unwrap_or_else(|_| "Unknown error".to_string());
-                            let error_msg = format!("Megalabs API HTTP error - status: {}, response: {}", status, error_body);
+                            let error_msg = format!("API HTTP error - status: {}, response: {}", status, error_body);
                             error!("{}", error_msg);
                             (false, error_msg)
                         }
@@ -297,7 +300,7 @@ impl SmsSenderModule {
             sms_individual.set_string("v-s:infoOfExecuting", info, Lang::none());
             
             // Save back to storage with update_use_param to prevent loop processing
-            match self.backend.mstorage_api.update_use_param("cfg:VedaSystem", event_id, "", ALL_MODULES, IndvOp::Put, &sms_individual) {
+            match self.backend.mstorage_api.update_use_param(&self.sys_ticket.id, event_id, "", ALL_MODULES, IndvOp::Put, &sms_individual) {
                 Ok(res) => {
                     if res.result == ResultCode::Ok {
                         info!("Updated SMS status for {}: success={}, info={}, event_id={}", individual_id, success, info, event_id);
@@ -342,11 +345,13 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     };
 
+    let stobj = backend.get_ticket_from_db(&systicket);
+
     let mut my_module = SmsSenderModule {
         sms_provider,
         module_info: module_info.unwrap(),
         backend,
-        sys_ticket: systicket,
+        sys_ticket: stobj,
     };
 
     module.prepare_queue(&mut my_module);

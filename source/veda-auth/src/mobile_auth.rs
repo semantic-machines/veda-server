@@ -103,11 +103,17 @@ impl MobileAuth {
         sms_individual.add_string("v-s:infoOfExecuting", "", Lang::none());
         
         // Put individual to storage/queue
-        let res = backend.mstorage_api.update(sys_ticket, IndvOp::Put, &sms_individual);
-        if res.result != ResultCode::Ok {
-            error!("Failed to store SMS individual, id = {}, result = {:?}", sms_id, res);
-            return ResultCode::InternalServerError;
-        }
+        let res = backend.mstorage_api.update_use_param(sys_ticket, "request_sms_code",
+                                                        "az",
+                                                        0,
+                                                        IndvOp::Put, &sms_individual);
+        let res = match res {
+            Ok(op_result) => op_result,
+            Err(e) => {
+                error!("Failed to store SMS individual, id = {}, error = {:?}", sms_id, e);
+                return ResultCode::InternalServerError;
+            }
+        };
         
         info!("SMS individual created and stored: {}", sms_id);
         info!("Phone: {}, Message: {}", normalized_phone, message);
