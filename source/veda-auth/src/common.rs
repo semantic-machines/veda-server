@@ -11,8 +11,6 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::str::from_utf8;
 use uuid::Uuid;
-// Re-export mobile auth functionality from mobile_auth module
-pub use crate::mobile_auth::{SmsProviderConfig, read_sms_config_from_ini};
 
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
@@ -60,7 +58,6 @@ pub struct AuthConf {
     pub sms_daily_limit: i32,
     pub sms_code_min: u32,
     pub sms_code_max: u32,
-    pub sms_provider: Option<SmsProviderConfig>,
 }
 
 impl Default for AuthConf {
@@ -82,7 +79,6 @@ impl Default for AuthConf {
             sms_daily_limit: 5,
             sms_code_min: 100_000,
             sms_code_max: 999_999,
-            sms_provider: None,
         }
     }
 }
@@ -370,10 +366,6 @@ pub fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
         if let Some(v) = node.get_first_integer("cfg:sms_code_max") {
             res.sms_code_max = v as u32;
         }
-
-        // SMS provider configuration from ini file
-        let sms_ini_path = node.get_first_literal("cfg:sms_config_file").unwrap_or_else(|| "sms.ini".to_string());
-        res.sms_provider = read_sms_config_from_ini(&sms_ini_path);
 
         if let Some(v) = node.get_first_literal("cfg:expired_pass_notification_template") {
             if let Some(mut i) = backend.get_individual_s(&v) {

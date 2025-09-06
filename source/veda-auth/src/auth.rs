@@ -495,9 +495,12 @@ impl<'a> AuthWorkPlace<'a> {
             return ResultCode::InternalServerError;
         }
 
-        // Send SMS asynchronously (non-blocking)
-        let _send_result = MobileAuth::send_sms_code(normalized_login, &sms_code, self.conf.sms_provider.clone());
-        // SMS отправляется в фоновом режиме, реальные ошибки логируются асинхронно
+        // Create SMS request individual for queue processing
+        let send_result = MobileAuth::send_sms_code_with_backend(normalized_login, &sms_code, &mut self.backend, self.sys_ticket);
+        if send_result != ResultCode::Ok {
+            error!("Failed to create SMS request individual, result = {:?}", send_result);
+            return send_result;
+        }
 
         // Update statistics
         self.user_stat.attempt_change_pass += 1;
