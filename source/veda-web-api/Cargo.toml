@@ -1,7 +1,8 @@
 [package]
 name = "veda-web-api"
 version = "0.1.8"
-edition = '2024'
+edition = "2021"
+resolver = "2"
 
 [features]
 default = []
@@ -57,7 +58,7 @@ mime = "0.3"
 mime_guess = "2.0"
 content_inspector = "0.2"
 chardetng = "0.1"
-rsa = "0.5"
+rsa = "0.9"
 rand = "0.8"
 pem = "0.8"
 actix-cors = "0.5"
@@ -65,6 +66,12 @@ jsonwebtoken = "9.2.0"
 sha2 = "0.10"
 rust-ini = "0.20.0"
 basen = "0.1.0"
+hmac = "0.12"
+pbkdf2 = "0.12"
+hex = "0.4"
+lru = "0.12"
+thiserror = "1.0"
+aes-gcm = "0.10"
 
 strum = "0.26"
 strum_macros = "0.26"
@@ -82,7 +89,7 @@ config = "0.13"
 ffmpeg-next = { version = "6.0", optional = true }
 
 #v_common = { package = "v-common", path = "../../../v-common", features = ["tokio_0_2", "tt_2", "awc_2"]}
-v_common = { package = "v-common", version = "=0.13.6", features = ["tokio_0_2", "tt_2", "awc_2"] }
+v_common = { package = "v-common", version = "=0.13.8", features = ["tokio_0_2", "tt_2", "awc_2"] }
 v-individual-model = "0.1.1"
 
 [profile.release]

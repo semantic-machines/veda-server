@@ -2,8 +2,9 @@ use crate::common::{
     create_new_credential, create_new_ticket, get_candidate_users_of_login, remove_secret, send_notification_email, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH,
     N_ITER,
 };
+use crate::mobile_auth::MobileAuth;
 use log::{error, info, warn};
-use chrono::Utc;
+use chrono::{Utc, TimeZone};
 use data_encoding::HEXLOWER;
 use rand::{thread_rng, Rng};
 use ring::pbkdf2;
@@ -119,14 +120,37 @@ impl<'a> AuthWorkPlace<'a> {
                 return (false, ResultCode::Ok);
             }
 
-            if user_login.to_lowercase() != self.login.to_lowercase() {
-                error!("user login {} not equal to requested login {}", user_login, self.login);
-                return (false, ResultCode::Ok);
+            if !MobileAuth::is_sms_code_request(self.login, self.password, self.secret) && !MobileAuth::is_sms_code_verification(&self.login, self.password, self.secret, &mut account){
+                if user_login.to_lowercase() != self.login.to_lowercase() {
+                    error!("user login {} not equal to requested login {}", user_login, self.login);
+                    return (false, ResultCode::Ok);
+                }
             }
 
             if let Some(mut person) = self.backend.get_individual_s(&user_id) {
+                if person.is_empty() {
+                    error!("failed to authenticate: login = {}, password = {}, user not found", self.login, self.password);
+                    ticket.result = ResultCode::AuthenticationFailed;
+                }
+                
                 self.get_credential(&mut account);
 
+                // Check for SMS code request (phone number + empty password + empty secret)
+                if MobileAuth::is_sms_code_request(self.login, self.password, self.secret) {
+                    let res = self.send_sms_code(&mut account, &person, &self.login);
+                    return (true, res);
+                }
+                
+                // Check for SMS code verification (phone number + empty password + filled secret)
+                if MobileAuth::is_sms_code_verification(&self.login, self.password, self.secret, &mut account) {
+                    let res = self.verify_sms_code(ticket, &person);
+                    return if res != ResultCode::Ok {
+                        (false, res)
+                    } else {
+                        (true, ResultCode::Ok)
+                    };
+                }
+                
                 if !self.secret.is_empty() && self.secret.len() > 5 {
                     let res = self.prepare_secret_code(ticket, &person);
                     return if res != ResultCode::Ok {
@@ -341,7 +365,7 @@ impl<'a> AuthWorkPlace<'a> {
         self.user_stat.attempt_change_pass += 1;
         self.user_stat.last_attempt_change_pass_date = Utc::now().timestamp();
 
-        let n_secret = thread_rng().gen_range(100_000, 999_999).to_string();
+        let n_secret = thread_rng().gen_range(self.conf.sms_code_min, self.conf.sms_code_max + 1).to_string();
 
         self.credential.set_string("v-s:secret", &n_secret, Lang::none());
         self.credential.set_datetime("v-s:SecretDateFrom", now);
@@ -367,4 +391,126 @@ impl<'a> AuthWorkPlace<'a> {
         }
         ResultCode::PasswordExpired
     }
+
+
+
+    // Verify SMS code and authenticate user
+    fn verify_sms_code(&mut self, ticket: &mut Ticket, person: &Individual) -> ResultCode {
+        info!("Verifying SMS code for user: {}, login: {}, secret: {}", person.get_id(), self.login, self.secret);
+
+        // Get stored secret from credential
+        let stored_secret = self.credential.get_first_literal("v-s:secret").unwrap_or_default();
+        
+        if stored_secret.is_empty() {
+            error!("Mobile auth: no stored secret found for user = {}", person.get_id());
+            return ResultCode::InvalidSecret;
+        }
+
+        // Compare provided secret with stored secret
+        if self.secret != stored_secret {
+            error!("Mobile auth: provided secret {} does not match stored secret for user = {}", self.secret, person.get_id());
+            self.user_stat.wrong_count_login += 1;
+            self.user_stat.last_wrong_login_date = Utc::now().timestamp();
+            return ResultCode::InvalidSecret;
+        }
+
+        // Check if secret is not expired
+        let now = Utc::now().timestamp();
+        let secret_date = self.credential.get_first_datetime("v-s:SecretDateFrom").unwrap_or_default();
+        if secret_date > 0 && now - secret_date > self.conf.secret_lifetime {
+            error!("Mobile auth: secret expired for user = {}", person.get_id());
+            return ResultCode::SecretExpired;
+        }
+
+        // Authentication successful - create ticket
+        let addr = if self.conf.check_ticket_ip {
+            self.ip
+        } else {
+            "127.0.0.1"
+        };
+
+        create_new_ticket(self.login, person.get_id(), addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage);
+
+        // Clear the used secret for security
+        self.credential.remove("v-s:secret");
+        self.credential.remove("v-s:SecretDateFrom");
+        let _ = self.backend.mstorage_api.update(self.sys_ticket, IndvOp::Put, self.credential);
+
+        // Reset failed login attempts
+        self.user_stat.wrong_count_login = 0;
+        self.user_stat.last_wrong_login_date = 0;
+
+        info!("Mobile authentication successful for user: {}, login: {}", person.get_id(), self.login);
+        ResultCode::Ok
+    }
+
+    // Generate and send SMS code for authentication
+    pub fn send_sms_code(&mut self, _account: &mut Individual, person: &Individual, normalized_login: &str) -> ResultCode {
+        info!("Sending SMS code for user: {}, login: {}", person.get_id(), normalized_login);
+        
+        // Check if this is a valid SMS code request
+        if !MobileAuth::is_sms_code_request(normalized_login, self.password, self.secret) {
+            error!("Invalid SMS request: login = {}, password empty = {}", normalized_login, self.password.is_empty());
+            return ResultCode::InvalidPassword;
+        }
+
+        let now = Utc::now().timestamp();
+
+        // Check rate limiting for SMS requests
+        let last_secret_date = self.credential.get_first_datetime("v-s:SecretDateFrom").unwrap_or_default();
+        if last_secret_date > 0 && now - last_secret_date < self.conf.sms_rate_limit_seconds {
+            let last_date_formatted = if last_secret_date > 0 {
+                Utc.timestamp_opt(last_secret_date, 0)
+                    .single()
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                    .unwrap_or_else(|| "Invalid date".to_string())
+            } else {
+                "Never".to_string()
+            };
+            error!("SMS request too frequent for login = {}, rate limit = {} seconds, last_secret_date = {}, time_since_last = {} seconds",
+                   normalized_login, self.conf.sms_rate_limit_seconds, last_date_formatted, now - last_secret_date);
+            return ResultCode::TooManyRequests;
+        }
+
+        // Check daily SMS limit
+        if self.user_stat.attempt_change_pass >= self.conf.sms_daily_limit {
+            if now - self.user_stat.last_attempt_change_pass_date < 24 * 60 * 60 {  // 24 hours
+                error!("Daily SMS limit ({}) exceeded for user = {}", self.conf.sms_daily_limit, person.get_id());
+                return ResultCode::TooManyRequestsChangePassword;
+            } else {
+                self.user_stat.attempt_change_pass = 0;
+            }
+        }
+
+        // Generate SMS code using configured range
+        let sms_code = thread_rng().gen_range(self.conf.sms_code_min, self.conf.sms_code_max + 1).to_string();
+        
+        // Save SMS code as secret in credential
+        self.credential.set_string("v-s:secret", &sms_code, Lang::none());
+        self.credential.set_datetime("v-s:SecretDateFrom", now);
+
+        let res = self.backend.mstorage_api.update(self.sys_ticket, IndvOp::Put, self.credential);
+        if res.result != ResultCode::Ok {
+            error!("Failed to store SMS secret, user = {}, result = {:?}", person.get_id(), res);
+            return ResultCode::InternalServerError;
+        }
+
+        // Create SMS request individual for queue processing
+        let send_result = MobileAuth::send_sms_code_with_backend(normalized_login, &sms_code, &mut self.backend, self.sys_ticket);
+        if send_result != ResultCode::Ok {
+            error!("Failed to create SMS request individual, result = {:?}", send_result);
+            return send_result;
+        }
+
+        // Update statistics
+        self.user_stat.attempt_change_pass += 1;
+        self.user_stat.last_attempt_change_pass_date = now;
+
+        info!("SMS code sent successfully to {}, user = {}", normalized_login, person.get_id());
+        ResultCode::Ok
+    }
+
+
+
+
 }

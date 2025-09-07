@@ -10,6 +10,7 @@ mod multifactor;
 mod nlp_augment_text;
 mod nlp_transcription;
 mod query;
+mod sms_auth;
 mod update;
 mod user_activity;
 mod vql_query_client;
@@ -23,6 +24,7 @@ use crate::common::{db_connector, NLPServerConfig, TranscriptionConfig, UserCont
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
+use crate::sms_auth::{salted_sms_request, verify_sms_auth, SmsAuthConfig, SmsAuthService};
 use crate::nlp_augment_text::augment_text;
 use crate::nlp_transcription::recognize_audio;
 use crate::query::{query_get, query_post, stored_query, QueryEndpoints};
@@ -153,6 +155,7 @@ async fn main() -> std::io::Result<()> {
 
     info!("LISTEN {port}");
 
+    let port_for_bind = port.clone();
     let mut server_future = HttpServer::new(move || {
         let mut mfp = MultifactorProps::default();
         if let Ok(conf) = Ini::load_from_file("multifactor.ini") {
@@ -167,6 +170,32 @@ async fn main() -> std::io::Result<()> {
                 callback_scheme: section.get("callback_scheme").map(|s| s.to_string()),
             };
         }
+
+        // SMS authentication configuration - simplified for veda-auth
+        let sms_config = if let Ok(conf) = Ini::load_from_file("config/veda-web-api.ini") {
+            let section = conf.section(Some("sms")).expect("Section 'sms' not found");
+            
+            SmsAuthConfig {
+                enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
+                client_secret: section.get("client_secret").expect("client_secret not found").to_string(),
+                max_time_drift: section.get("max_time_drift").unwrap_or("300").parse().unwrap_or(300),
+                rsa_key_path: section.get("rsa_key_path").map(|s| s.to_string()),
+            }
+        } else {
+            SmsAuthConfig::default()
+        };
+
+        // Create SMS authentication service - using veda-auth API with RSA encryption
+        let sms_service = match SmsAuthService::new(sms_config) {
+            Ok(service) => {
+                info!("SMS service initialized with RSA encryption, key fingerprint: {}", service.get_public_key_fingerprint());
+                service
+            },
+            Err(e) => {
+                error!("Failed to initialize SMS service: {:?}", e);
+                panic!("SMS service initialization failed");
+            }
+        };
 
         let db = db_connector(&tt_config);
 
@@ -237,6 +266,7 @@ async fn main() -> std::io::Result<()> {
             .data(mfp)
             .app_data(web::Data::new(nlp_server_config))
             .app_data(web::Data::new(transcription_config))
+            .app_data(web::Data::new(sms_service))
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
                 read_tickets: ticket_cache_read,
@@ -308,10 +338,15 @@ async fn main() -> std::io::Result<()> {
                             .route(web::route().method(m_propfind.clone()).to(handle_webdav_propfind_2)),
                     ),
             )
+            .service(
+                web::scope("/auth/sms")
+                    .service(web::resource("/request").route(web::post().to(salted_sms_request)))
+                    .service(web::resource("/verify").route(web::post().to(verify_sms_auth)))
+            )
             .service(web::resource("/").guard(guard::Post()).route(web::post().to(handle_post_request)))
             .service(Files::new("/", "./public").redirect_to_slash_directory().index_file("index.html"))
     })
-    .bind(format!("0.0.0.0:{port}"))?
+    .bind(format!("0.0.0.0:{}", port_for_bind))?
     .workers(workers)
     .run()
     .fuse();

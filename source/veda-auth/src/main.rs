@@ -4,6 +4,7 @@ extern crate lazy_static;
 
 mod auth;
 mod common;
+mod mobile_auth;
 
 use crate::auth::*;
 use crate::common::{create_sys_ticket, get_ticket_trusted, logout, read_auth_configuration, AuthConf, UserStat};
@@ -19,6 +20,7 @@ use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::init_module_log;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::veda_backend::Backend;
+
 
 const TIMEOUT_RECV: u64 = 30;
 const TIMEOUT_SEND: u64 = 60;

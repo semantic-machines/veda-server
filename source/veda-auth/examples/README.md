@@ -21,9 +21,11 @@ cargo run --example basic_usage
 Shows how to create a client that connects to the authentication server:
 - Connecting to the auth server via NNG protocol
 - Basic authentication with username/password
+- **SMS authentication** with phone number and verification codes
 - Authentication with secret codes (password reset)
 - Requesting password reset
 - Getting trusted tickets
+- Checking user existence
 - Logout functionality
 
 **How to run:**
@@ -88,10 +90,19 @@ To run examples that require the authentication server:
 2. System generates secret code and sends notification
 3. User authenticates with secret code and new password
 
+### SMS Authentication Flow
+1. User sends authentication request with phone number (empty password)
+2. System generates and sends SMS code to the mobile phone
+3. User authenticates with phone number and received SMS code
+4. System validates code and returns authentication ticket
+
 ### User Management Flow
-1. Create user accounts using the authentication system
-2. Manage user lifecycle (enable/disable)
-3. Monitor user statistics and handle locking
+1. Check if user exists before creating accounts
+2. Create user accounts using the authentication system
+3. Manage user lifecycle (enable/disable)
+4. Monitor user statistics and handle locking
+
+
 
 ## Configuration
 
@@ -112,6 +123,9 @@ The system looks for configuration in:
 - Configure appropriate timeouts and retry limits
 - Enable IP checking for tickets
 - Set up proper email notifications for security events
+- **Configure SMS provider** properly for SMS authentication
+- **Set appropriate SMS rate limits** to prevent abuse
+- **Monitor SMS usage** to control costs and prevent spam
 
 ### Development Use
 - Use relaxed settings for development (shown in config example)
@@ -156,6 +170,7 @@ cargo test --example configuration_example
 - `create_sys_ticket()`: Create system-level ticket
 - `get_candidate_users_of_login()`: Find users by login
 
+
 ### Structures
 - `AuthConf`: Authentication configuration
 - `UserStat`: User statistics tracking
@@ -165,9 +180,11 @@ cargo test --example configuration_example
 ### Result Codes
 - `ResultCode::Ok`: Success
 - `ResultCode::AuthenticationFailed`: Invalid credentials
-- `ResultCode::TooManyRequests`: Account locked
+- `ResultCode::TooManyRequests`: Account locked (including SMS rate limits)
 - `ResultCode::PasswordExpired`: Password needs reset
-- `ResultCode::InvalidSecret`: Invalid secret code
+- `ResultCode::InvalidSecret`: Invalid secret code (including SMS codes)
+- SMS specific errors (handled through existing result codes)
+- SMS provider errors (logged but use existing authentication failure codes)
 
 ## Contributing
 
