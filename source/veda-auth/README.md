@@ -7,6 +7,7 @@ Authentication system for Veda platform, written in Rust.
 - **Secure authentication** with PBKDF2 password hashing
 - **Protection against brute force attacks** with automatic user blocking
 - **Password reset** through secret codes with email notifications
+- **SMS authentication** with two-step verification process
 - **Trusted authentication** for system operations
 - **Ticket lifecycle management** with time control
 - **Support for different authentication sources** (VEDA, AD)
@@ -139,30 +140,125 @@ pub struct AuthWorkPlace<'a> {
 
 ## Configuration
 
-### Default settings
+The authentication configuration is split between two files for better organization:
 
-```rust
-let config = AuthConf {
-    failed_auth_attempts: 2,           // Maximum failed attempts
-    ticket_lifetime: 10 * 60 * 60,    // Ticket lifetime (10 hours)
-    pass_lifetime: 90 * 24 * 60 * 60, // Password lifetime (90 days)
-    check_ticket_ip: true,             // Check IP for tickets
-    // ... other settings
-};
+### Configuration Files
+
+1. **`veda.properties`** - Main system settings and authentication parameters
+2. **`config/sms_authentication.ini`** - SMS-specific authentication settings
+
+### SMS Configuration (config/sms_authentication.ini)
+
+```ini
+# SMS Authentication Configuration
+# Настройки SMS аутентификации для Veda Auth
+
+[sms]
+# Настройки SMS аутентификации
+sms_rate_limit_period = 20s
+sms_daily_limit = 24
+sms_code_min = 100000
+sms_code_max = 999999
 ```
 
-### Production configuration
+### Authentication Settings (veda.properties)
 
-```rust
-let prod_config = AuthConf {
-    failed_auth_attempts: 3,
-    failed_auth_lock_period: 15 * 60,  // Lock for 15 minutes
-    ticket_lifetime: 8 * 60 * 60,      // Ticket for 8 hours
-    secret_lifetime: 6 * 60 * 60,      // Secret for 6 hours
-    check_ticket_ip: true,
-    // ... email notifications
-};
+```ini
+# Authentication configuration
+# Security settings
+failed_auth_attempts = 3
+failed_change_pass_attempts = 2
+failed_auth_lock_period = 15m
+failed_pass_change_lock_period = 30m
+success_pass_change_lock_period = 24h
+
+# Lifetimes
+user_password_lifetime = 90d
+user_ticket_lifetime = 8h
+secret_lifetime = 6h
+
+# Email notification templates (subject|body format)
+expired_pass_notification_template = "Password Expired - {{app_name}}|..."
+denied_password_expired_notification_template = "Password Change Denied - {{app_name}}|..."
 ```
+
+### Configuration Parameters
+
+#### Authentication Parameters (from veda.properties)
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `failed_auth_attempts` | Max failed login attempts before lock | 3 |
+| `failed_change_pass_attempts` | Max failed password change attempts | 2 |
+| `failed_auth_lock_period` | Lock duration after failed attempts | 15m |
+| `failed_pass_change_lock_period` | Lock duration after failed password changes | 30m |
+| `success_pass_change_lock_period` | Minimum time between password changes | 24h |
+| `user_ticket_lifetime` | Authentication ticket lifetime | 8h |
+| `user_password_lifetime` | Password validity period | 90d |
+| `secret_lifetime` | Secret code lifetime for password reset | 6h |
+| `check_ticket_ip` | Enable IP checking for tickets | true |
+
+#### SMS Parameters (from config/sms_authentication.ini)
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `sms_daily_limit` | Daily SMS limit per user | 24 |
+| `sms_rate_limit_period` | Minimum time between SMS | 20s |
+| `sms_code_min` | Minimum SMS code value | 100000 |
+| `sms_code_max` | Maximum SMS code value | 999999 |
+
+#### Email Templates (from veda.properties)
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `expired_pass_notification_template` | Email template for expired passwords | Built-in template |
+| `denied_password_expired_notification_template` | Email template for denied password changes | Built-in template |
+
+## SMS Authentication Process
+
+SMS authentication in Veda Auth uses a two-step verification process:
+
+### Step 1: Request SMS Code
+
+**Request parameters:**
+- `login`: Valid phone number (with or without + prefix)
+- `password`: Empty or SHA256 hash of empty string
+- `secret`: Empty
+
+**Process:**
+1. System validates phone number format (minimum 10 digits)
+2. Checks rate limiting (default: 20 seconds between requests)
+3. Checks daily SMS limit (default: 24 per day)
+4. Generates random SMS code (6 digits, 100000-999999 range)
+5. Stores code as secret in user credential
+6. Sends SMS via backend queue system
+7. Returns `ResultCode::Ok` on success
+
+**Phone number formats supported:**
+- `+79123456789` - international format
+- `79123456789` - national format with country code
+- `89123456789` - converted to 7-prefixed format
+- `9123456789` - 10-digit format, adds country code
+
+### Step 2: Verify SMS Code
+
+**Request parameters:**
+- `login`: Same phone number as in step 1  
+- `password`: Empty or SHA256 hash of empty string
+- `secret`: SMS code received (4+ digit numeric string)
+
+**Process:**
+1. System checks account has `v-s:authOrigin = "MOBILE"`
+2. Validates phone number format
+3. Compares provided code with stored secret
+4. Checks secret expiration (default: 6 hours lifetime)
+5. Creates authentication ticket on success
+6. Clears used secret for security
+7. Resets failed login attempts counter
+
+**Security features:**
+- SMS codes expire after configured lifetime
+- Rate limiting prevents spam requests  
+- Daily limits prevent abuse
+- Used secrets are immediately cleared
+- Failed attempts are tracked and limited
 
 ## Security
 

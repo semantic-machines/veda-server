@@ -26,6 +26,8 @@ use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::individual2msgpack::to_msgpack;
 use v_common::v_api::common_type::{OptAuthorize, ResultCode};
 
+use crate::mobile_auth::MobileAuth;
+
 pub const EMPTY_SHA256_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 pub const ALLOW_TRUSTED_GROUP: &str = "cfg:TrustedAuthenticationUserGroup";
 const CREDENTIAL_LEN: usize = digest::SHA512_OUTPUT_LEN;
@@ -76,7 +78,7 @@ impl Default for AuthConf {
             check_ticket_ip: true,
             // SMS default values
             sms_rate_limit_seconds: 20,
-            sms_daily_limit: 5,
+            sms_daily_limit: 24,
             sms_code_min: 100_000,
             sms_code_max: 999_999,
         }
@@ -322,6 +324,7 @@ pub fn read_duration_param(indv: &mut Individual, param: &str) -> Option<std::ti
     None
 }
 
+
 pub fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
     let mut res = AuthConf::default();
 
@@ -353,17 +356,30 @@ pub fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
             res.failed_change_pass_attempts = v as i32;
         }
 
-        // SMS configuration
-        if let Some(d) = read_duration_param(&mut node, "cfg:sms_rate_limit_period") {
+        // SMS configuration - read from ini file first, fallback to individual
+        let (ini_rate_limit, ini_daily_limit, ini_code_min, ini_code_max) = MobileAuth::read_sms_configuration_from_ini();
+        
+        if let Some(rate_limit) = ini_rate_limit {
+            res.sms_rate_limit_seconds = rate_limit;
+        } else if let Some(d) = read_duration_param(&mut node, "cfg:sms_rate_limit_period") {
             res.sms_rate_limit_seconds = d.as_secs() as i64;
         }
-        if let Some(v) = node.get_first_integer("cfg:sms_daily_limit") {
+        
+        if let Some(daily_limit) = ini_daily_limit {
+            res.sms_daily_limit = daily_limit;
+        } else if let Some(v) = node.get_first_integer("cfg:sms_daily_limit") {
             res.sms_daily_limit = v as i32;
         }
-        if let Some(v) = node.get_first_integer("cfg:sms_code_min") {
+        
+        if let Some(code_min) = ini_code_min {
+            res.sms_code_min = code_min;
+        } else if let Some(v) = node.get_first_integer("cfg:sms_code_min") {
             res.sms_code_min = v as u32;
         }
-        if let Some(v) = node.get_first_integer("cfg:sms_code_max") {
+        
+        if let Some(code_max) = ini_code_max {
+            res.sms_code_max = code_max;
+        } else if let Some(v) = node.get_first_integer("cfg:sms_code_max") {
             res.sms_code_max = v as u32;
         }
 

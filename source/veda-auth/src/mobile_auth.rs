@@ -4,6 +4,9 @@ use v_individual_model::onto::datatype::Lang;
 use v_common::v_api::common_type::ResultCode;
 use v_common::module::veda_backend::Backend;
 use v_common::v_api::api_client::IndvOp;
+use std::path::Path;
+use configparser::ini::Ini;
+use parse_duration::parse;
 
 // Mobile authentication helper functions
 pub struct MobileAuth;
@@ -118,5 +121,94 @@ impl MobileAuth {
         info!("Phone: {}, Message: {}", normalized_phone, message);
         
         ResultCode::Ok
+    }
+
+    /// Reads SMS configuration from config/sms_authentication.ini file
+    pub fn read_sms_configuration_from_ini() -> (Option<i64>, Option<i32>, Option<u32>, Option<u32>) {
+        // Try different possible locations for the config file
+        let possible_paths = [
+            "config/sms_authentication.ini",
+            "./config/sms_authentication.ini",
+            "../config/sms_authentication.ini",
+            "../../config/sms_authentication.ini",
+        ];
+
+        let mut config_path = None;
+        for path in &possible_paths {
+            if Path::new(path).exists() {
+                config_path = Some(*path);
+                break;
+            }
+        }
+
+        let config_path = match config_path {
+            Some(path) => path,
+            None => {
+                error!("SMS configuration file not found in any of the expected locations: {:?}", possible_paths);
+                return (None, None, None, None);
+            }
+        };
+
+        let mut config = Ini::new();
+        match config.load(config_path) {
+            Ok(_) => {
+                info!("Successfully loaded SMS configuration from {}", config_path);
+
+                let mut rate_limit_seconds = None;
+                let mut daily_limit = None;
+                let mut code_min = None;
+                let mut code_max = None;
+
+                // Read sms_rate_limit_period and parse as duration
+                if let Some(rate_limit_str) = config.get("sms", "sms_rate_limit_period") {
+                    match parse(&rate_limit_str) {
+                        Ok(duration) => {
+                            rate_limit_seconds = Some(duration.as_secs() as i64);
+                            info!("SMS rate limit period: {}s", duration.as_secs());
+                        },
+                        Err(e) => error!("Failed to parse sms_rate_limit_period '{}': {}", rate_limit_str, e),
+                    }
+                }
+
+                // Read sms_daily_limit as integer
+                if let Some(daily_limit_str) = config.get("sms", "sms_daily_limit") {
+                    match daily_limit_str.parse::<i32>() {
+                        Ok(limit) => {
+                            daily_limit = Some(limit);
+                            info!("SMS daily limit: {}", limit);
+                        },
+                        Err(e) => error!("Failed to parse sms_daily_limit '{}': {}", daily_limit_str, e),
+                    }
+                }
+
+                // Read sms_code_min as u32
+                if let Some(code_min_str) = config.get("sms", "sms_code_min") {
+                    match code_min_str.parse::<u32>() {
+                        Ok(min) => {
+                            code_min = Some(min);
+                            info!("SMS code min: {}", min);
+                        },
+                        Err(e) => error!("Failed to parse sms_code_min '{}': {}", code_min_str, e),
+                    }
+                }
+
+                // Read sms_code_max as u32
+                if let Some(code_max_str) = config.get("sms", "sms_code_max") {
+                    match code_max_str.parse::<u32>() {
+                        Ok(max) => {
+                            code_max = Some(max);
+                            info!("SMS code max: {}", max);
+                        },
+                        Err(e) => error!("Failed to parse sms_code_max '{}': {}", code_max_str, e),
+                    }
+                }
+
+                (rate_limit_seconds, daily_limit, code_min, code_max)
+            },
+            Err(e) => {
+                error!("Failed to load SMS configuration from {}: {}", config_path, e);
+                (None, None, None, None)
+            }
+        }
     }
 }
