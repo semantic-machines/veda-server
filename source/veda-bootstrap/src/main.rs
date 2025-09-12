@@ -13,17 +13,25 @@ use sysinfo::{get_current_pid, ProcessExt, SystemExt};
 
 mod app;
 mod check;
+mod cli;
 mod common;
 mod queue_check;
 
 #[tokio::main]
 async fn main() {
     let env_var = "RUST_LOG";
+
+    // Check if CLI mode should be handled
+    if cli::handle_cli_mode().await {
+        return; // CLI mode was handled, exit
+    }
+
     match std::env::var_os(env_var) {
         Some(val) => println!("use env var: {}: {:?}", env_var, val.to_str()),
         None => std::env::set_var(env_var, "info"),
     }
 
+    // Standard daemon mode
     let app_dir = if let Ok(s) = std::env::var("APPDIR") {
         s.as_str().to_string() + "/"
     } else {
@@ -83,5 +91,4 @@ async fn main() {
     }
 
     app.watch_started_modules().await;
-    //info!("started {:?}", started);
 }

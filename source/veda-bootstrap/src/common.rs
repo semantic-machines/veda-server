@@ -119,12 +119,18 @@ pub struct TelegramDest {
 
 pub fn auth_watchdog_check(app: &mut App) -> bool {
     // PING (use function logout)
-    if let Err(e) = app.backend.auth_api.logout(&None, Some(IpAddr::from_str("127.0.0.1").unwrap())) {
-        if e.result == ResultCode::AuthenticationFailed {
-            return true;
+
+    let res = match app.backend.auth_api.logout(&None, Some(IpAddr::from_str("127.0.0.1").unwrap())) {
+        Ok(_) => true,
+        Err(e) => {
+            if e.result == ResultCode::AuthenticationFailed {
+                true
+            } else {
+                false
+            }
         }
-    }
-    false
+    };
+    res
 }
 
 pub fn mstorage_watchdog_check(app: &mut App) -> bool {
