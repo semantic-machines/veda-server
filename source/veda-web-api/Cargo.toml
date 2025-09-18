@@ -79,7 +79,6 @@ strum_macros = "0.26"
 version = "3.0.0"
 git-version = "0.3.9"
 
-#v_common = { package = "v-common", version = "=0.10.9" }
 tokio = "0.2.25"
 toml = "0.5.11"
 futures-util = "0.3.30"
