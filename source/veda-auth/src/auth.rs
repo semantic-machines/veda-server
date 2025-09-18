@@ -1,5 +1,5 @@
 use crate::common::{
-    create_new_credential, create_new_ticket, get_candidate_users_of_login, remove_secret, send_notification_email, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH,
+    create_new_credential, create_new_ticket_with_auth_info, get_candidate_users_of_login, remove_secret, send_notification_email, set_password, AuthConf, UserStat, EMPTY_SHA256_HASH,
     N_ITER,
 };
 use crate::mobile_auth::MobileAuth;
@@ -35,6 +35,8 @@ pub struct AuthWorkPlace<'a> {
     pub credential: &'a mut Individual,
     pub is_permanent: bool,
     pub origin: String,
+    pub domain: &'a str,
+    pub initiator: &'a str,
 }
 
 impl<'a> AuthWorkPlace<'a> {
@@ -187,7 +189,7 @@ impl<'a> AuthWorkPlace<'a> {
                             "127.0.0.1"
                         };
 
-                        create_new_ticket(self.login, &user_id, addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage);
+                        create_new_ticket_with_auth_info(self.login, &user_id, addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage, "password", self.domain, self.initiator, &self.origin);
                         self.user_stat.wrong_count_login = 0;
                         self.user_stat.last_wrong_login_date = 0;
                         return (true, ResultCode::Ok);
@@ -263,7 +265,7 @@ impl<'a> AuthWorkPlace<'a> {
                 "127.0.0.1"
             };
 
-            create_new_ticket(self.login, person.get_id(), addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage);
+            create_new_ticket_with_auth_info(self.login, person.get_id(), addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage, "secret", self.domain, self.initiator, &self.origin);
             self.user_stat.attempt_change_pass = 0;
             info!("updated password, password = {}, user = {}", self.password, person.get_id());
             ResultCode::Ok
@@ -429,7 +431,7 @@ impl<'a> AuthWorkPlace<'a> {
             "127.0.0.1"
         };
 
-        create_new_ticket(self.login, person.get_id(), addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage);
+        create_new_ticket_with_auth_info(self.login, person.get_id(), addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage, "sms", self.domain, self.initiator, &self.origin);
 
         // Clear the used secret for security
         self.credential.remove("v-s:secret");

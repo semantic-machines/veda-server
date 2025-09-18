@@ -7,6 +7,7 @@ use v_common::v_api::api_client::IndvOp;
 use std::path::Path;
 use configparser::ini::Ini;
 use parse_duration::parse;
+use log::{ warn};
 
 // Mobile authentication helper functions
 pub struct MobileAuth;
@@ -45,17 +46,22 @@ impl MobileAuth {
 
     // Check if this is SMS code verification request
     pub fn is_sms_code_verification(login: &str, password: &str, secret: &str, account: &mut Individual) -> bool {
+        warn!("@A1 login={}, password={}, secret={}, account_id={}", login, password, secret, account.get_id());
         // Check if account has mobile auth origin
         let auth_origin = account.get_first_literal("v-s:authOrigin").unwrap_or_default();
         if auth_origin.to_uppercase() != "MOBILE" {
+            warn!("@A1E");
             return false;
         }
+        warn!("@A2");
 
         // Check if login is a valid phone number
         let login_is_valid_phone = Self::is_valid_phone_number(login);
         if !login_is_valid_phone {
+            warn!("@A2E");
             return false;
         }
+        warn!("@A3");
 
         // Check if password is empty and secret is filled
         let password_empty = password.is_empty() || password == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -101,6 +107,8 @@ impl MobileAuth {
         sms_individual.add_string("v-s:recipientPhone", &normalized_phone, Lang::none());
         sms_individual.add_string("v-s:messageBody", &message, Lang::none());
         sms_individual.add_datetime("v-s:created", chrono::Utc::now().timestamp());
+        // Add source field to indicate this SMS was created in authentication module
+        sms_individual.add_string("v-s:source", "veda-auth", Lang::none());
         // Add v-s:Deliverable properties
         sms_individual.add_bool("v-s:isSuccess", false);
         sms_individual.add_string("v-s:infoOfExecuting", "", Lang::none());

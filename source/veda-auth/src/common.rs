@@ -119,6 +119,8 @@ pub fn get_ticket_trusted(
     tr_ticket_id: Option<&str>,
     login: Option<&str>,
     ip: Option<&str>,
+    domain: Option<&str>,
+    initiator: Option<&str>,
     xr: &mut XapianReader,
     backend: &mut Backend,
     auth_data: &mut VStorage,
@@ -200,7 +202,12 @@ pub fn get_ticket_trusted(
                         } else {
                             "127.0.0.1"
                         };
-                        create_new_ticket(login, &check_user_id, addr, conf.ticket_lifetime, &mut ticket, &mut backend.storage);
+                        // Get auth origin from user account
+                        let origin = account.get_first_literal("v-s:authOrigin").unwrap_or("VEDA".to_string()).to_uppercase();
+                        let method = if tr_ticket.auth_method.is_empty() { "trusted" } else { &tr_ticket.auth_method };
+                        let dom = domain.unwrap_or(&tr_ticket.domain);
+                        let init = initiator.unwrap_or(&tr_ticket.initiator);
+                        create_new_ticket_with_auth_info(login, &check_user_id, addr, conf.ticket_lifetime, &mut ticket, &mut backend.storage, method, dom, init, &origin);
                         info!("trusted authenticate, result ticket = {:?}", ticket);
 
                         return ticket;
@@ -410,6 +417,10 @@ pub fn read_auth_configuration(backend: &mut Backend) -> AuthConf {
 }
 
 pub fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration: i64, ticket: &mut Ticket, storage: &mut VStorage) {
+    create_new_ticket_with_auth_info(login, user_id, addr, duration, ticket, storage, "password", "", "", "VEDA");
+}
+
+pub fn create_new_ticket_with_auth_info(login: &str, user_id: &str, addr: &str, duration: i64, ticket: &mut Ticket, storage: &mut VStorage, auth_method: &str, domain: &str, initiator: &str, origin: &str) {
     if addr.parse::<IpAddr>().is_err() {
         error!("fail create_new_ticket: invalid ip {}", addr);
         return;
@@ -440,6 +451,12 @@ pub fn create_new_ticket(login: &str, user_id: &str, addr: &str, duration: i64, 
     }
 
     ticket_indv.add_string("ticket:duration", &duration.to_string(), Lang::none());
+    
+    // Add new fields for authentication method, domain, initiator and origin
+    ticket_indv.add_string("ticket:authMethod", auth_method, Lang::none());
+    ticket_indv.add_string("ticket:domain", domain, Lang::none());
+    ticket_indv.add_string("ticket:initiator", initiator, Lang::none());
+    ticket_indv.add_string("ticket:authOrigin", origin, Lang::none());
 
     if store(&ticket_indv, storage) {
         ticket.update_from_individual(&mut ticket_indv);

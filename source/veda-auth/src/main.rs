@@ -124,6 +124,8 @@ fn req_prepare(
             let password = v["password"].as_str().unwrap_or_default();
             let secret = v["secret"].as_str().unwrap_or_default();
             let ip = v["addr"].as_str().unwrap_or_default();
+            let domain = v["domain"].as_str().unwrap_or("veda");
+            let initiator = v["initiator"].as_str().unwrap_or("authenticate");
 
             let user_stat = suspicious.entry(login.to_owned()).or_default();
 
@@ -144,6 +146,8 @@ fn req_prepare(
                 credential: &mut Default::default(),
                 is_permanent: false,
                 origin: "VEDA".to_string(),
+                domain,
+                initiator,
             };
 
             let ticket = ah.authenticate();
@@ -158,11 +162,16 @@ fn req_prepare(
             res["result"] = json!(ticket.result as i64);
             res["end_time"] = json!(ticket.end_time);
             res["auth_origin"] = json!(ah.origin);
+            res["auth_method"] = json!(ticket.auth_method);
+            res["domain"] = json!(ticket.domain);
+            res["initiator"] = json!(ticket.initiator);
 
             return Message::from(res.to_string().as_bytes());
         },
         "get_ticket_trusted" => {
-            let ticket = get_ticket_trusted(conf, v["ticket"].as_str(), v["login"].as_str(), v["addr"].as_str(), xr, backend, auth_data, az);
+            let domain = v["domain"].as_str();
+            let initiator = v["initiator"].as_str();
+            let ticket = get_ticket_trusted(conf, v["ticket"].as_str(), v["login"].as_str(), v["addr"].as_str(), domain, initiator, xr, backend, auth_data, az);
 
             let mut res = JSONValue::default();
             res["type"] = json!("ticket");
@@ -171,6 +180,10 @@ fn req_prepare(
             res["user_login"] = json!(ticket.user_login);
             res["result"] = json!(ticket.result as i64);
             res["end_time"] = json!(ticket.end_time);
+            res["auth_origin"] = json!(ticket.auth_origin);
+            res["auth_method"] = json!(ticket.auth_method);
+            res["domain"] = json!(ticket.domain);
+            res["initiator"] = json!(ticket.initiator);
 
             return Message::from(res.to_string().as_bytes());
         },

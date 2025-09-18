@@ -79,7 +79,10 @@ Use received SMS code for authentication:
     "user_login": "username", 
     "result": 0,
     "end_time": 1640995200000,
-    "auth_origin": "VEDA"
+    "auth_origin": "VEDA",
+    "auth_method": "password",
+    "domain": "veda",
+    "initiator": "authenticate"
 }
 ```
 
@@ -118,7 +121,11 @@ Get a trusted ticket for impersonation (requires appropriate permissions).
     "user_uri": "target_user_uri",
     "user_login": "target_username",
     "result": 0,
-    "end_time": 1640995200000
+    "end_time": 1640995200000,
+    "auth_origin": "VEDA",
+    "auth_method": "trusted",
+    "domain": "veda",
+    "initiator": "get_ticket_trusted"
 }
 ```
 
@@ -144,6 +151,35 @@ Invalidate an authentication ticket.
     "end_time": 1640995200000
 }
 ```
+
+## Response Fields
+
+All authentication responses include these fields:
+
+### Standard Fields
+- `type` - Always "ticket" for authentication responses
+- `id` - Unique ticket identifier (empty string on error)
+- `user_uri` - User URI from database (empty string on error)
+- `user_login` - User login name (empty string on error)
+- `result` - Result code (0 for success, error code for failures)
+- `end_time` - Ticket expiration timestamp in milliseconds
+- `auth_origin` - Authentication origin type, taken from user's `v-s:authOrigin` field:
+  - `"VEDA"` - Standard Veda platform users (default)
+  - `"AD"` - Active Directory users  
+  - `"MOBILE"` - Mobile-only users
+
+### Authentication Context Fields
+- `auth_method` - Authentication method used:
+  - `"password"` - Standard login/password authentication
+  - `"secret"` - Authentication with secret code (password reset)
+  - `"sms"` - SMS code authentication
+  - `"trusted"` - Trusted ticket generation
+- `domain` - Authentication domain (default: "veda")
+- `initiator` - Operation that initiated authentication:
+  - `"authenticate"` - Standard authentication request
+  - `"get_ticket_trusted"` - Trusted ticket request
+
+**Note:** The `auth_method`, `domain`, and `initiator` fields are only present in successful authentication responses, not in error responses.
 
 ## Result Codes
 
@@ -171,6 +207,18 @@ Configure these parameters in `cfg:standart_node`:
 - `cfg:sms_code_min` - Minimum SMS code value
 - `cfg:sms_code_max` - Maximum SMS code value
 - `cfg:sms_config_file` - Path to SMS configuration file
+
+### SMS Individual Creation
+
+When SMS authentication is requested, the system creates a `v-s:Sms` individual with the following properties:
+
+- `rdf:type` - "v-s:Sms"
+- `v-s:recipientPhone` - Normalized phone number
+- `v-s:messageBody` - SMS message text with authentication code
+- `v-s:created` - Timestamp when SMS was created
+- `v-s:source` - Source module that created the SMS (set to "veda-auth" for authentication module)
+- `v-s:isSuccess` - Delivery status (initially false)
+- `v-s:infoOfExecuting` - Execution information (initially empty)
 
 ## Connection
 

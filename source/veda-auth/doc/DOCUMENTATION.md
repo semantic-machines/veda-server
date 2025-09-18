@@ -43,7 +43,10 @@ User authentication with login and password.
     "user_login": "user_login",
     "result": 0,
     "end_time": 1640995200000,
-    "auth_origin": "VEDA"
+    "auth_origin": "VEDA",
+    "auth_method": "password",
+    "domain": "veda",
+    "initiator": "authenticate"
 }
 ```
 
@@ -57,6 +60,22 @@ Get trusted ticket for another user (requires special permissions).
     "ticket": "current_ticket_id",
     "login": "target_user_login",
     "addr": "client_ip"
+}
+```
+
+**Response:**
+```json
+{
+    "type": "ticket",
+    "id": "new_ticket_id",
+    "user_uri": "target_user_uri",
+    "user_login": "target_user_login",
+    "result": 0,
+    "end_time": 1640995200000,
+    "auth_origin": "VEDA",
+    "auth_method": "trusted",
+    "domain": "veda",
+    "initiator": "get_ticket_trusted"
 }
 ```
 
@@ -112,7 +131,10 @@ End session and invalidate ticket.
     "user_login": "+7xxxxxxxxxx",
     "result": 0,
     "end_time": 1640995200000,
-    "auth_origin": "VEDA"
+    "auth_origin": "VEDA",
+    "auth_method": "sms",
+    "domain": "veda",
+    "initiator": "authenticate"
 }
 ```
 
@@ -157,6 +179,33 @@ Server runs on address specified in configuration (default `tcp://localhost:8080
 
 All requests are sent in JSON format over NNG REQ/REP sockets.
 
+### Response Fields
+
+All successful authentication responses include these fields:
+
+#### Standard Fields
+- `type` - Always "ticket" for authentication responses
+- `id` - Unique ticket identifier
+- `user_uri` - User URI from database  
+- `user_login` - User login name
+- `result` - Result code (0 for success, error code for failures)
+- `end_time` - Ticket expiration timestamp in milliseconds
+- `auth_origin` - Authentication origin type, taken from user's `v-s:authOrigin` field:
+  - `"VEDA"` - Standard Veda platform users (default)
+  - `"AD"` - Active Directory users  
+  - `"MOBILE"` - Mobile-only users
+
+#### Authentication Context Fields
+- `auth_method` - Authentication method used:
+  - `"password"` - Standard login/password authentication
+  - `"secret"` - Authentication with secret code (password reset)
+  - `"sms"` - SMS code authentication
+  - `"trusted"` - Trusted ticket generation
+- `domain` - Authentication domain (default: "veda")
+- `initiator` - Operation that initiated authentication:
+  - `"authenticate"` - Standard authentication request
+  - `"get_ticket_trusted"` - Trusted ticket request
+
 ### Result Codes
 
 - `0` - `Ok` - Successful operation
@@ -193,6 +242,7 @@ Main parameters:
 - **SMS code range**: 100,000 - 999,999 (configurable via `cfg:sms_code_min`, `cfg:sms_code_max`)
 - **SMS code lifetime**: matches secret lifetime configuration
 - **SMS provider**: Megalabs integration (configurable in SMS service)
+- **SMS tracking**: Each SMS individual is marked with `v-s:source` field set to "veda-auth" for tracking purposes
 
 ### Usage Examples
 
@@ -223,7 +273,10 @@ Main parameters:
     "user_login": "admin",
     "result": 0,
     "end_time": 1640995200000,
-    "auth_origin": "VEDA"
+    "auth_origin": "VEDA",
+    "auth_method": "password",
+    "domain": "veda",
+    "initiator": "authenticate"
 }
 ```
 
@@ -276,7 +329,10 @@ Main parameters:
     "user_login": "+79xxxxxxxxx",
     "result": 0,
     "end_time": 1640995200000,
-    "auth_origin": "VEDA"
+    "auth_origin": "VEDA",
+    "auth_method": "sms",
+    "domain": "veda",
+    "initiator": "authenticate"
 }
 ```
 

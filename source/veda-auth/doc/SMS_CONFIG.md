@@ -55,8 +55,21 @@ cfg:sms_code_max: 999999             # Maximum SMS code value
 1. When a user requests SMS authentication with phone number and empty password
 2. The system generates a random code between `sms_code_min` and `sms_code_max`
 3. The code is saved as `v-s:secret` in the user's credential
-4. SMS is sent using the configured provider
-5. User enters the received code to authenticate
+4. A `v-s:Sms` individual is created with the message and tracking information
+5. SMS is sent using the configured provider
+6. User enters the received code to authenticate
+
+## SMS Individual Properties
+
+When an SMS is created for authentication, the following properties are set:
+
+- `rdf:type`: "v-s:Sms"
+- `v-s:recipientPhone`: Normalized phone number (Russian format with +7 prefix)
+- `v-s:messageBody`: SMS message with authentication code
+- `v-s:created`: Creation timestamp
+- `v-s:source`: Source module ("veda-auth" for authentication requests)
+- `v-s:isSuccess`: Delivery status (initially false)
+- `v-s:infoOfExecuting`: Execution information (initially empty)
 
 ## Security Notes
 
