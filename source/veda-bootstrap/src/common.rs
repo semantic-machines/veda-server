@@ -15,7 +15,7 @@ use teloxide::prelude::*;
 use teloxide::types::Recipient;
 use v_common::module::info::ModuleInfo;
 use v_common::v_api::api_client::IndvOp;
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
 use v_individual_model::onto::individual::Individual;
 
 pub const MSTORAGE_ID: i64 = 1;
