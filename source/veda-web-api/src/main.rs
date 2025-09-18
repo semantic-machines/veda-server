@@ -20,7 +20,7 @@ extern crate serde_derive;
 extern crate serde_json;
 
 use crate::auth::{authenticate_get, authenticate_post, get_membership, get_rights, get_rights_origin, get_ticket_trusted, is_ticket_valid, logout};
-use crate::common::{db_connector, NLPServerConfig, TranscriptionConfig, UserContextCache, VQLClient, VQLClientConnectType};
+use crate::common::{db_connector, load_auth_access_config, NLPServerConfig, TranscriptionConfig, UserContextCache, VQLClient, VQLClientConnectType};
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
@@ -197,6 +197,10 @@ async fn main() -> std::io::Result<()> {
             }
         };
 
+        // Load authentication method access configuration
+        let auth_access_config = load_auth_access_config();
+        info!("Loaded auth access config with restrictions for: {:?}", auth_access_config.restrictions.keys().collect::<Vec<_>>());
+
         let db = db_connector(&tt_config);
 
         let mut ch = CHClient::new(Module::get_property("query_search_db").unwrap_or_default());
@@ -267,12 +271,13 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(nlp_server_config))
             .app_data(web::Data::new(transcription_config))
             .app_data(web::Data::new(sms_service))
+            .app_data(web::Data::new(auth_access_config))
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
                 read_tickets: ticket_cache_read,
                 write_tickets: Arc::new(Mutex::new(ticket_cache_write)),
                 check_ticket_ip,
-                are_external_users,
+                check_external_users: are_external_users,
             })
             .data(PrefixesCache {
                 full2short_r: f2s_prefixes_cache_read,

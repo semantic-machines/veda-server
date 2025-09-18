@@ -1,5 +1,5 @@
 use crate::common::{
-    extract_addr, get_module_name, log_w, GetOperationStateRequest, TicketRequest, TicketUriRequest, Uris, UserContextCache, UserId, UserInfo, BASE_PATH,
+    extract_addr, get_module_name, log_w, validate_auth_method_access, AuthAccessConfig, GetOperationStateRequest, TicketRequest, TicketUriRequest, Uris, UserContextCache, UserId, UserInfo, BASE_PATH,
     LIMITATA_COGNOSCI,
 };
 use crate::common::{get_user_info, log};
@@ -14,8 +14,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::info::ModuleInfo;
+use v_common::module::ticket::Ticket;
 use v_common::storage::async_storage::{check_user_in_group, get_individual_from_db, AStorage};
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
 use v_common::v_queue::consumer::Consumer;
 use v_common::v_queue::record::Mode;
 use v_individual_model::onto::individual::Individual;
@@ -30,10 +31,8 @@ const MAIN_QUEUE_PATH: &str = "./data/queue";
 pub(crate) async fn get_operation_state(params: web::Query<GetOperationStateRequest>, req: HttpRequest) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
     let uinf = UserInfo {
-        ticket: None,
-        addr: extract_addr(&req),
-        user_id: String::new(),
-        end_time: 0,
+        ticket: Ticket::default(),
+        addr: extract_addr(&req)
     };
     let module_name = get_module_name(params.module_id);
     if let Ok(mut module_info) = ModuleInfo::new(BASE_PATH, module_name, true) {
@@ -55,6 +54,7 @@ pub(crate) async fn get_individuals(
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
     let uinf = match get_user_info(params.ticket.to_owned(), &req, &ticket_cache, &db, &activity_sender).await {
@@ -70,11 +70,18 @@ pub(crate) async fn get_individuals(
     log(Some(&start_time), &uinf, "get_individuals", &format!("{:?}", payload.uris), ResultCode::Ok);
 
     for uri in &payload.uris {
-        let (mut indv, res_code) = get_individual_from_db(uri, &uinf.user_id, &db, Some(&az)).await?;
+        // Check auth method access restrictions for this resource
+        let auth_access_result = validate_auth_method_access(&uinf, uri, Some(&az), &auth_config).await;
+        if auth_access_result != ResultCode::Ok {
+            log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &uinf.ticket.user_uri, "get_individuals", uri, auth_access_result);
+            continue; // Skip this resource, don't add to results
+        }
+
+        let (mut indv, res_code) = get_individual_from_db(uri, &uinf.ticket.user_uri, &db, Some(&az)).await?;
         if res_code == ResultCode::Ok {
             if !indv.any_exists("rdf:type", LIMITATA_COGNOSCI) {
                 res.push(indv.get_obj().as_json());
-            } else if let Ok(b) = check_user_in_group(&uinf.user_id, SUPER_USER_GROUP, Some(&az)).await {
+            } else if let Ok(b) = check_user_in_group(&uinf.ticket.user_uri, SUPER_USER_GROUP, Some(&az)).await {
                 if b {
                     res.push(indv.get_obj().as_json());
                 }
@@ -92,6 +99,7 @@ pub(crate) async fn get_individual(
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
     let uinf = match get_user_info(params.ticket.clone(), &req, &ticket_cache, &db, &activity_sender).await {
@@ -142,11 +150,18 @@ pub(crate) async fn get_individual(
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InternalServerError as u16).unwrap()));
     }
 
-    let (mut res, res_code) = get_individual_from_db(&id, &uinf.user_id, &db, Some(&az)).await?;
+    // Check auth method access restrictions for this resource
+    let auth_access_result = validate_auth_method_access(&uinf, &id, Some(&az), &auth_config).await;
+    if auth_access_result != ResultCode::Ok {
+        log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &uinf.ticket.user_uri, "get_individual:validate_auth_method_access", &id, auth_access_result);
+        return Ok(HttpResponse::new(StatusCode::from_u16(auth_access_result as u16).unwrap()));
+    }
+
+    let (mut res, res_code) = get_individual_from_db(&id, &uinf.ticket.user_uri, &db, Some(&az)).await?;
     log(Some(&start_time), &uinf, "get_individual", &id, res_code);
     if res_code == ResultCode::Ok {
         return if res.any_exists("rdf:type", LIMITATA_COGNOSCI) {
-            if let Ok(b) = check_user_in_group(&uinf.user_id, SUPER_USER_GROUP, Some(&az)).await {
+            if let Ok(b) = check_user_in_group(&uinf.ticket.user_uri, SUPER_USER_GROUP, Some(&az)).await {
                 if b {
                     return Ok(HttpResponse::Ok().json(res.get_obj().as_json()));
                 }

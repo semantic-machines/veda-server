@@ -54,7 +54,7 @@ pub struct MultifactorProps {
 
 pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorProps) -> io::Result<HttpResponse> {
     // Check for a valid ticket for the user
-    if uinf.ticket.is_none() {
+    if uinf.ticket.id.is_empty() {
         return Ok(HttpResponse::BadRequest().finish());
     }
 
@@ -64,11 +64,11 @@ pub async fn multifactor(req: HttpRequest, uinf: &UserInfo, mfp: &MultifactorPro
     let url = format!("{}/access/requests", mfp.url);
 
     let mut hasher = Sha256::new();
-    hasher.update(uinf.user_id.as_bytes());
+    hasher.update(uinf.ticket.user_uri.as_bytes());
     let user_identity = format!("{}@optiflow", BASE36.encode_const_len(&hasher.finish()));
 
     // Encrypt user ticket
-    let encrypted_data_base64 = match encrypt(uinf.ticket.as_ref().unwrap()).await {
+    let encrypted_data_base64 = match encrypt(&uinf.ticket.id).await {
         Ok(d) => d,
         Err(e) => {
             log::error!("fail encrypt message, error: {:?}", e);
@@ -246,9 +246,9 @@ pub async fn handle_post_request(
     };
 
     let r = json!({
-        "id": uinf.ticket,
-        "user_uri": uinf.user_id,
-        "end_time": uinf.end_time*1000
+        "id": uinf.ticket.id,
+        "user_uri": uinf.ticket.user_uri,
+        "end_time": uinf.ticket.end_time*1000
     });
 
     let cookie = Cookie::new("auth", format!("{}; SameSite=Strict", encode(r.to_string())));

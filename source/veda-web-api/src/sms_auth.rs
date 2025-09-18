@@ -1,4 +1,4 @@
-use crate::common::extract_addr;
+use crate::common::{extract_addr, extract_initiator};
 use actix_web::{web, HttpRequest, HttpResponse};
 use futures::lock::Mutex;
 use hex;
@@ -60,11 +60,10 @@ pub struct SmsAuthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedSessionData {
     pub phone: String,
-    pub created_at: u64, // timestamp
+    pub created_at: u64, // server timestamp when session was created
     // Stateless fields - no server-side storage needed
     pub request_nonce: String,    // nonce from original request
     pub request_salt: String,     // salt from original request  
-    pub request_timestamp: u64,   // timestamp from original request
 }
 
 // Container for encrypted session token
@@ -266,47 +265,29 @@ impl SmsAuthService {
         Ok(token)
     }
 
-    fn decrypt_session_data(&self, token: &EncryptedSessionToken) -> Result<EncryptedSessionData, SmsError> {
+    fn decrypt_session_data(&self, token: &EncryptedSessionToken, request_id: &str) -> Result<EncryptedSessionData, SmsError> {
         let padding = Oaep::new::<Sha256>();
         
-        info!("🔍 Decrypting token - data: '{}', nonce: '{}'", token.data, token.nonce);
-        
         // Decode ciphertext
-        info!("📥 Step 1: Decoding base64 data...");
         let ciphertext = base64::decode(&token.data)
             .map_err(|e| {
-                error!("❌ Base64 decode failed: {:?}", e);
-                error!("Data that failed to decode: '{}'", token.data);
+                error!("[{}] DEBUG: base64 decode failed: {:?}", request_id, e);
                 SmsError::InvalidTokenFormat
             })?;
-        info!("✅ Base64 decoded successfully, ciphertext length: {}", ciphertext.len());
 
         // Decrypt with RSA private key
-        info!("🔐 Step 2: RSA decryption...");
-        let current_fingerprint = self.get_public_key_fingerprint();
-        info!("RSA key fingerprint: {}", current_fingerprint);
-        warn!("⚠️  ВАЖНО: Убедитесь что этот fingerprint такой же как при создании токена!");
         let plaintext = self.rsa_private_key.decrypt(padding, &ciphertext)
             .map_err(|e| {
-                error!("❌ RSA decryption failed: {:?}", e);
-                error!("Ciphertext length: {}", ciphertext.len());
-                error!("Expected RSA key size: {} bits", self.rsa_private_key.size() * 8);
+                error!("[{}] DEBUG: RSA decryption failed: {:?}", request_id, e);
                 SmsError::DecryptionError
             })?;
-        info!("✅ RSA decryption successful, plaintext length: {}", plaintext.len());
 
         // Deserialize session data
-        info!("📄 Step 3: JSON deserialization...");
-        let plaintext_str = String::from_utf8_lossy(&plaintext);
-        info!("Plaintext content: {}", plaintext_str);
-        
         let session_data: EncryptedSessionData = serde_json::from_slice(&plaintext)
             .map_err(|e| {
-                error!("❌ JSON deserialization failed: {:?}", e);
-                error!("Plaintext that failed: '{}'", plaintext_str);
+                error!("[{}] DEBUG: JSON deserialization failed: {:?}", request_id, e);
                 SmsError::DecryptionError
             })?;
-        info!("✅ JSON deserialization successful");
 
         Ok(session_data)
     }
@@ -341,14 +322,11 @@ impl SmsAuthService {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let fake_timestamp = current_time - rng.gen_range(0..300); // Random time within last 5 minutes
-        
         let fake_session = EncryptedSessionData {
             phone: fake_phone,
             created_at: current_time,
             request_nonce: fake_nonce,
             request_salt: fake_salt,
-            request_timestamp: fake_timestamp,
         };
 
         // Encrypt fake session data with RSA
@@ -365,26 +343,27 @@ impl SmsAuthService {
         request: &SaltedSmsRequest,
         ip_addr: Option<std::net::IpAddr>,
         auth_client: &Mutex<AuthClient>,
+        initiator: Option<&str>,
     ) -> Result<String, SmsError> {
         // Normalize phone number
         let normalized_phone = self.normalize_phone(&request.phone)?;
 
         // Call veda-auth API to request SMS code
-        match auth_client.lock().await.authenticate(&normalized_phone, &None, ip_addr, &None) {
+        match auth_client.lock().await.authenticate(&normalized_phone, &None, ip_addr, &None, Some("veda"), initiator) {
             Ok(_) => {
                 info!("SMS auth code requested for {}", normalized_phone);
                 
                 // Create encrypted session data
+                let server_now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
                 let session_data = EncryptedSessionData {
                     phone: normalized_phone.clone(),
-                    created_at: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
+                    created_at: server_now,
                     // Include original request data for replay protection
                     request_nonce: request.nonce.clone(),
                     request_salt: request.salt.clone(),
-                    request_timestamp: request.timestamp,
                 };
 
                 // Encrypt session data and serialize to string
@@ -411,51 +390,52 @@ impl SmsAuthService {
         code: &str,
         ip_addr: Option<std::net::IpAddr>,
         auth_client: &Mutex<AuthClient>,
+        request_id: &str,
+        initiator: Option<&str>,
     ) -> Result<serde_json::Value, SmsError> {
-        info!("=== DEBUG: Starting verify_auth_code ===");
-        info!("Token length: {}", encrypted_token.len());
-        info!("Token content: {}", encrypted_token);
-        info!("Code: {}", code);
+        info!("[{}] DEBUG: verify_auth_code - token_len: {}, code: '{}', ip: {:?}", 
+              request_id, encrypted_token.len(), code, ip_addr);
         
-        // Parse the encrypted token - handle both direct object and JSON string
+        // Parse the encrypted token
+        info!("[{}] DEBUG: parsing token...", request_id);
         let token: EncryptedSessionToken = serde_json::from_str(encrypted_token)
             .map_err(|e| {
-                error!("❌ Failed to parse encrypted token as JSON: {:?}", e);
-                error!("Token content that failed: {}", encrypted_token);
+                error!("[{}] DEBUG: failed to parse token: {:?}", request_id, e);
                 SmsError::InvalidTokenFormat
             })?;
             
-        info!("✅ Successfully parsed token - data length: {}, nonce length: {}", 
-              token.data.len(), token.nonce.len());
+        // Decrypt session data
+        info!("[{}] DEBUG: decrypting session...", request_id);
+        let session_data = self.decrypt_session_data(&token, request_id)?;
+        info!("[{}] DEBUG: decrypted phone: '{}'", request_id, session_data.phone);
         
-        info!("🔓 Starting decryption process...");
-        let session_data = self.decrypt_session_data(&token)?;
-        info!("✅ Successfully decrypted session data for phone: {}", session_data.phone);
-        
-        // Check session expiry (5 minutes default)
+        // Check session expiry
+        info!("[{}] DEBUG: checking expiry...", request_id);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         
-        if (now - session_data.created_at) > 300 { // 5 minutes
+        let session_age = now - session_data.created_at;
+        if session_age > 300 { // 5 minutes
+            let now_datetime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(now);
+            let created_datetime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(session_data.created_at);
+            
+            error!("[{}] DEBUG: session expired: {} seconds", request_id, session_age);
+            error!("[{}] DEBUG: now: {:?} ({})", request_id, now_datetime, now);
+            error!("[{}] DEBUG: created_at: {:?} ({})", request_id, created_datetime, session_data.created_at);
             return Err(SmsError::SessionExpired);
         }
 
-        // Additional security: verify request timestamp hasn't been reused
-        if (now - session_data.request_timestamp) > self.config.max_time_drift * 2 {
-            return Err(SmsError::SessionExpired);
-        }
-
-        // Call veda-auth API to verify SMS code
-        // Use empty password and the code in secret field
-        match auth_client.lock().await.authenticate(&session_data.phone, &None, ip_addr, &Some(code.to_string())) {
+        // Verify SMS code via veda-auth
+        info!("[{}] DEBUG: calling veda-auth for phone: '{}'", request_id, session_data.phone);
+        match auth_client.lock().await.authenticate(&session_data.phone, &None, ip_addr, &Some(code.to_string()), Some("veda"), initiator) {
             Ok(auth_result) => {
-                info!("SMS auth successful for {}", session_data.phone);
+                info!("[{}] DEBUG: auth successful", request_id);
                 Ok(auth_result)
             },
             Err(e) => {
-                error!("Failed to verify SMS code for {} via veda-auth: {:?}", session_data.phone, e);
+                error!("[{}] DEBUG: auth failed: {:?}", request_id, e);
                 Err(SmsError::InvalidCode)
             }
         }
@@ -487,6 +467,7 @@ pub async fn salted_sms_request(
     auth_client: web::Data<Mutex<AuthClient>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let ip_addr = extract_addr(&req);
+    let initiator = extract_initiator(&req);
 
     // Verify salted request
     if let Err(e) = sms_service.verify_salted_request(&data).await {
@@ -499,7 +480,7 @@ pub async fn salted_sms_request(
     }
 
     // Request SMS code via veda-auth
-    match sms_service.request_auth_code(&data, ip_addr, &auth_client).await {
+    match sms_service.request_auth_code(&data, ip_addr, &auth_client, initiator.as_deref()).await {
         Ok(token) => {
             info!("✅ SMS request processed for {} from {:?}", data.phone, ip_addr);
             info!("📤 Sending token to client: '{}'", token);
@@ -525,26 +506,31 @@ pub async fn verify_sms_auth(
     auth_client: web::Data<Mutex<AuthClient>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let ip_addr = extract_addr(&req);
+    let initiator = extract_initiator(&req);
     
-    info!("🌐 HTTP verify_sms_auth called from {:?}", ip_addr);
-    info!("📋 Request data: token length = {}, code = '{}'", 
-          data.token.len(), data.code);
-    info!("📝 Full token received: '{}'", data.token);
+    // Generate unique request ID for tracing
+    let request_id = format!("{:08x}", rand::random::<u32>());
+    
+    info!("[{}] DEBUG: verify_sms_auth from {:?}, token_len: {}, code: '{}'", 
+          request_id, ip_addr, data.token.len(), data.code);
 
     match sms_service.verify_auth_code(
         &data.token,
         &data.code,
         ip_addr,
         &auth_client,
+        &request_id,
+        initiator.as_deref(),
     ).await {
         Ok(auth_result) => {
-            // Return the same JSON structure as auth.rs authenticate() method
+            info!("[{}] DEBUG: verify_sms_auth success", request_id);
             Ok(HttpResponse::Ok().json(auth_result))
         },
         Err(e) => {
-            // Return error code in the same way as auth.rs authenticate() method
+            error!("[{}] DEBUG: verify_sms_auth failed: {:?}", request_id, e);
+            
             use actix_web::http::StatusCode;
-            use v_common::v_api::obj::ResultCode;
+            use v_common::v_api::common_type::ResultCode;
             
             let result_code = match e {
                 SmsError::InvalidCode => ResultCode::AuthenticationFailed,
@@ -554,7 +540,9 @@ pub async fn verify_sms_auth(
                 _ => ResultCode::BadRequest,
             };
             
-            Ok(HttpResponse::new(StatusCode::from_u16(result_code as u16).unwrap_or(StatusCode::BAD_REQUEST)))
+            let status_code = StatusCode::from_u16(result_code as u16).unwrap_or(StatusCode::BAD_REQUEST);
+            
+            Ok(HttpResponse::new(status_code))
         },
     }
 }

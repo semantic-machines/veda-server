@@ -15,8 +15,8 @@ impl VQLHttpClient {
         }
     }
 
-    pub(crate) async fn query(&mut self, ticket: &Option<String>, addr: &Option<IpAddr>, query: FTQuery) -> QueryResult {
-        let mut cl = self.client.post(format!("{}?ticket={}", &self.point, ticket.as_ref().unwrap_or(&String::new()))).header("Content-Type", "application/json");
+    pub(crate) async fn query(&mut self, ticket_id: &str, addr: &Option<IpAddr>, query: FTQuery) -> QueryResult {
+        let mut cl = self.client.post(format!("{}?ticket={}", &self.point, ticket_id.to_string())).header("Content-Type", "application/json");
 
         if let Some(a) = addr {
             cl = cl.header("X-Real-IP", a.to_string());

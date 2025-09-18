@@ -9,7 +9,7 @@ use std::io::{Error, ErrorKind};
 use v_common::module::module_impl::Module;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
 use v_individual_model::onto::individual::Individual;
 
 const UPDATE_USER_ACTIVITY_PERIOD: i64 = 60;

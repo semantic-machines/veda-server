@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::common::{extract_addr, get_user_info, log, log_w, TicketRequest, UserContextCache, UserId};
+use crate::common::{extract_addr, get_user_info, log, log_w, validate_auth_method_access, AuthAccessConfig, TicketRequest, UserContextCache, UserId};
 use actix_web::http::StatusCode;
 use actix_web::{put, web, HttpRequest, HttpResponse};
 use futures::channel::mpsc::Sender;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::json2individual::parse_json_to_individual;
 
@@ -28,6 +28,7 @@ pub(crate) async fn update(
     db: web::Data<AStorage>,
     mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
     let uinf = match get_user_info(params.ticket.clone(), &request, &ticket_cache, &db, &activity_sender).await {
@@ -89,6 +90,14 @@ pub(crate) async fn update(
                 log(Some(&start_time), &uinf, action, new_indv.get_id(), ResultCode::InvalidIdentifier);
                 return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::InvalidIdentifier as u16).unwrap()));
             }
+
+            // Check auth method access restrictions for this resource
+            let auth_access_result = validate_auth_method_access(&uinf, new_indv.get_id(), None, &auth_config).await;
+            if auth_access_result != ResultCode::Ok {
+                log_w(Some(&start_time), &params.ticket, &extract_addr(&request), &uinf.ticket.user_uri, action, new_indv.get_id(), auth_access_result);
+                return Ok(HttpResponse::new(StatusCode::from_u16(auth_access_result as u16).unwrap()));
+            }
+
             inds.push(new_indv);
         }
 
@@ -107,7 +116,7 @@ pub(crate) async fn update(
             return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::TicketExpired as u16).unwrap()));
         }
 
-        let ticket = uinf.ticket.clone().unwrap_or_default();
+        let ticket = uinf.ticket.id.clone();
         return match ms.updates_use_param_with_addr((&ticket, uinf.addr), event_id, src, assigned_subsystems, cmd, &inds) {
             Ok(r) => {
                 log(Some(&start_time), &uinf, action, &ind_ids, r.result);
@@ -137,8 +146,9 @@ pub(crate) async fn put_individuals(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    update("put_individuals", extract_addr(&req), params, IndvOp::Put, data, req, ticket_cache, db, mstorage, activity_sender).await
+    update("put_individuals", extract_addr(&req), params, IndvOp::Put, data, req, ticket_cache, db, mstorage, activity_sender, auth_config).await
 }
 
 #[put("/put_individual")]
@@ -150,8 +160,9 @@ pub(crate) async fn put_individual(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    update("put_individual", extract_addr(&req), params, IndvOp::Put, data, req, ticket_cache, db, mstorage, activity_sender).await
+    update("put_individual", extract_addr(&req), params, IndvOp::Put, data, req, ticket_cache, db, mstorage, activity_sender, auth_config).await
 }
 
 #[put("/remove_individual")]
@@ -163,8 +174,9 @@ pub(crate) async fn remove_individual(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    update("remove_individual", extract_addr(&req), params, IndvOp::Remove, data, req, ticket_cache, db, mstorage, activity_sender).await
+    update("remove_individual", extract_addr(&req), params, IndvOp::Remove, data, req, ticket_cache, db, mstorage, activity_sender, auth_config).await
 }
 
 #[put("/add_to_individual")]
@@ -176,8 +188,9 @@ pub(crate) async fn add_to_individual(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    update("add_to_individual", extract_addr(&req), params, IndvOp::AddTo, data, req, ticket_cache, db, mstorage, activity_sender).await
+    update("add_to_individual", extract_addr(&req), params, IndvOp::AddTo, data, req, ticket_cache, db, mstorage, activity_sender, auth_config).await
 }
 
 #[put("/set_in_individual")]
@@ -189,8 +202,9 @@ pub(crate) async fn set_in_individual(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    update("set_in_individual", extract_addr(&req), params, IndvOp::SetIn, data, req, ticket_cache, db, mstorage, activity_sender).await
+    update("set_in_individual", extract_addr(&req), params, IndvOp::SetIn, data, req, ticket_cache, db, mstorage, activity_sender, auth_config).await
 }
 
 #[put("/remove_from_individual")]
@@ -202,6 +216,7 @@ pub(crate) async fn remove_from_individual(
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    update("remove_from_individual", extract_addr(&req), params, IndvOp::RemoveFrom, data, req, ticket_cache, db, mstorage, activity_sender).await
+    update("remove_from_individual", extract_addr(&req), params, IndvOp::RemoveFrom, data, req, ticket_cache, db, mstorage, activity_sender, auth_config).await
 }

@@ -15,7 +15,7 @@ use std::time::Instant;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use v_common::storage::async_storage::AStorage;
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
 
 #[cfg(feature = "audio_convert")]
 use ffmpeg_next as ffmpeg;

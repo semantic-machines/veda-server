@@ -1,5 +1,5 @@
 use crate::common::{
-    check_external_user, check_ticket, extract_addr, log_w, AuthenticateRequest, GetTicketTrustedRequest, TicketRequest, TicketUriRequest, UserContextCache, UserId,
+    check_external_enter, check_ticket, extract_addr, extract_initiator, log_w, validate_auth_method_access, AuthAccessConfig, AuthenticateRequest, GetTicketTrustedRequest, TicketRequest, TicketUriRequest, UserContextCache, UserId,
     UserInfo,
 };
 use crate::common::{get_user_info, log};
@@ -14,9 +14,10 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_common::module::ticket::Ticket;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::AuthClient;
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext, Trace, ACCESS_8_LIST, ACCESS_PREDICATE_LIST};
 use v_individual_model::onto::datatype::Lang;
 use v_individual_model::onto::individual::Individual;
@@ -32,10 +33,8 @@ pub(crate) async fn get_ticket_trusted(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
     let uinf = UserInfo {
-        ticket: None,
+        ticket: Ticket::default(),
         addr: extract_addr(&req),
-        user_id: String::new(),
-        end_time: 0,
     };
 
     if let Err(e) = check_ticket(&Some(params.ticket.clone()), &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
@@ -53,7 +52,7 @@ pub(crate) async fn get_ticket_trusted(
         uinf.addr
     };
 
-    return match auth.lock().await.get_ticket_trusted(&params.ticket, params.login.as_ref(), user_addr) {
+    return match auth.lock().await.get_ticket_trusted(&params.ticket, params.login.as_ref(), user_addr, Some("veda")) {
         Ok(r) => {
             log(Some(&start_time), &uinf, "get_ticket_trusted", &format!("login={:?}, ip={:?}", params.login, params.ip), ResultCode::Ok);
             Ok(HttpResponse::Ok().json(r))
@@ -76,10 +75,8 @@ pub(crate) async fn logout(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
     let uinf = UserInfo {
-        ticket: None,
-        addr: extract_addr(&req),
-        user_id: String::new(),
-        end_time: 0,
+        ticket: Ticket::default(),
+        addr: extract_addr(&req)
     };
 
     match check_ticket(&params.ticket, &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
@@ -167,33 +164,28 @@ async fn authenticate(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
     let mut uinf = UserInfo {
-        ticket: None,
+        ticket: Ticket::default(),
         addr: extract_addr(&req),
-        user_id: String::new(),
-        end_time: 0,
     };
-    return match auth.lock().await.authenticate(login, password, extract_addr(&req), secret) {
+    let initiator = extract_initiator(&req);
+    return match auth.lock().await.authenticate(login, password, extract_addr(&req), secret, Some("veda"), initiator.as_deref()) {
         Ok(r) => {
-            uinf.ticket = Some(r["id"].as_str().unwrap_or("").to_string());
-
-            let user_uri = r["user_uri"].as_str().unwrap_or("");
-            uinf.user_id = user_uri.to_string();
-
-            if ticket_cache.are_external_users {
-                if let Err(e) = check_external_user(user_uri, &db).await {
+            uinf.ticket = Ticket::from(r.clone());
+            if ticket_cache.check_external_users {
+                if let Err(e) = check_external_enter(&uinf.ticket, &db).await {
                     log(Some(&start_time), &uinf, "authenticate", login, e);
                     return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap()));
                 }
             }
 
-            if let Some(auth_origin) = r["auth_origin"].as_str() {
-                if auth_origin.to_uppercase() == "VEDA MULTIFACTOR" {
-                    info!("detected [VEDA MULTIFACTOR] for user {}", user_uri);
+            if !uinf.ticket.auth_origin.is_empty() {
+                if uinf.ticket.auth_origin.to_uppercase() == "VEDA MULTIFACTOR" {
+                    info!("detected [VEDA MULTIFACTOR] for user {}", uinf.ticket.user_uri);
                     return multifactor(req, &uinf, mfp.as_ref()).await;
                 }
             }
 
-            log(Some(&start_time), &uinf, "authenticate", user_uri, ResultCode::Ok);
+            log(Some(&start_time), &uinf, "authenticate", &uinf.ticket.user_uri, ResultCode::Ok);
             Ok(HttpResponse::Ok().json(r))
         },
         Err(e) => {
@@ -211,6 +203,7 @@ pub(crate) async fn get_rights(
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
@@ -223,13 +216,20 @@ pub(crate) async fn get_rights(
     };
 
     if let (Some(u), Some(_)) = (&params.user_id, &params.ticket) {
-        uinf.user_id = u.to_owned();
+        uinf.ticket.user_uri = u.to_owned();
+    }
+
+    // Check auth method access restrictions for this resource
+    let auth_access_result = validate_auth_method_access(&uinf, &params.uri, Some(&az), &auth_config).await;
+    if auth_access_result != ResultCode::Ok {
+        log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &uinf.ticket.user_uri, "get_rights", &params.uri, auth_access_result);
+        return Ok(HttpResponse::new(StatusCode::from_u16(auth_access_result as u16).unwrap()));
     }
 
     let rights = az
         .lock()
         .await
-        .authorize(&params.uri, &uinf.user_id, Access::CanRead as u8 | Access::CanCreate as u8 | Access::CanDelete as u8 | Access::CanUpdate as u8, false)
+        .authorize(&params.uri, &uinf.ticket.user_uri, Access::CanRead as u8 | Access::CanCreate as u8 | Access::CanDelete as u8 | Access::CanUpdate as u8, false)
         .unwrap_or(0);
     let mut pstm = Individual::default();
 
@@ -253,6 +253,7 @@ pub(crate) async fn get_membership(
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
@@ -264,6 +265,13 @@ pub(crate) async fn get_membership(
         },
     };
 
+    // Check auth method access restrictions for this resource
+    let auth_access_result = validate_auth_method_access(&uinf, &params.uri, Some(&az), &auth_config).await;
+    if auth_access_result != ResultCode::Ok {
+        log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &uinf.ticket.user_uri, "get_membership", &params.uri, auth_access_result);
+        return Ok(HttpResponse::new(StatusCode::from_u16(auth_access_result as u16).unwrap()));
+    }
+
     let mut acl_trace = Trace {
         acl: &mut String::new(),
         is_acl: false,
@@ -274,7 +282,7 @@ pub(crate) async fn get_membership(
         str_num: 0,
     };
 
-    if az.lock().await.authorize_and_trace(&params.uri, &uinf.user_id, Access::CanRead as u8, false, &mut acl_trace).unwrap_or(0) == Access::CanRead as u8 {
+    if az.lock().await.authorize_and_trace(&params.uri, &uinf.ticket.user_uri, Access::CanRead as u8, false, &mut acl_trace).unwrap_or(0) == Access::CanRead as u8 {
         let mut mbshp = Individual::default();
 
         mbshp.set_id("_");
@@ -303,6 +311,7 @@ pub(crate) async fn get_rights_origin(
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
@@ -313,6 +322,13 @@ pub(crate) async fn get_rights_origin(
             return Ok(HttpResponse::new(StatusCode::from_u16(res as u16).unwrap()));
         },
     };
+
+    // Check auth method access restrictions for this resource
+    let auth_access_result = validate_auth_method_access(&uinf, &params.uri, Some(&az), &auth_config).await;
+    if auth_access_result != ResultCode::Ok {
+        log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &uinf.ticket.user_uri, "get_rights_origin", &params.uri, auth_access_result);
+        return Ok(HttpResponse::new(StatusCode::from_u16(auth_access_result as u16).unwrap()));
+    }
 
     let mut acl_trace = Trace {
         acl: &mut String::new(),
@@ -329,7 +345,7 @@ pub(crate) async fn get_rights_origin(
         .await
         .authorize_and_trace(
             &params.uri,
-            &uinf.user_id,
+            &uinf.ticket.user_uri,
             Access::CanRead as u8 | Access::CanCreate as u8 | Access::CanDelete as u8 | Access::CanUpdate as u8,
             false,
             &mut acl_trace,

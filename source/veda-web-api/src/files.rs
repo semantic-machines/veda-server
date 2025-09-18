@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::common::{extract_addr, get_ticket, get_user_info, log_w, UserContextCache, UserId, UserInfo};
+use crate::common::{extract_addr, get_ticket, get_user_info, log_w, validate_auth_method_access, AuthAccessConfig, UserContextCache, UserId, UserInfo};
 use crate::common::{log, TicketRequest};
 use crate::webdav::get_content_type;
 use actix_files::NamedFile;
@@ -26,7 +26,7 @@ use uuid::Uuid;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext};
 use v_individual_model::onto::datatype::Lang;
 use v_individual_model::onto::individual::Individual;
@@ -60,7 +60,7 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
         file_info_id.to_string()
     };
 
-    let (mut file_info, res_code) = get_individual_from_db(&file_info_id, &uinf.user_id, db, Some(az)).await?;
+    let (mut file_info, res_code) = get_individual_from_db(&file_info_id, &uinf.ticket.user_uri, db, Some(az)).await?;
 
     if res_code != ResultCode::Ok {
         //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res_code);
@@ -127,8 +127,9 @@ pub(crate) async fn load_file(
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    get_file(params.ticket.to_owned(), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Attachment).await
+    get_file(params.ticket.to_owned(), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Attachment, auth_config).await
 }
 
 pub async fn get_file(
@@ -141,6 +142,7 @@ pub async fn get_file(
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     only_headers: bool,
     disposition_type: header::DispositionType,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
@@ -151,6 +153,13 @@ pub async fn get_file(
             return Ok(HttpResponse::new(StatusCode::from_u16(res as u16).unwrap()));
         },
     };
+
+    // Check auth method access restrictions for this file resource
+    let auth_access_result = validate_auth_method_access(&uinf, file_id, Some(&az), &auth_config).await;
+    if auth_access_result != ResultCode::Ok {
+        log_w(Some(&start_time), &get_ticket(&req, &None), &extract_addr(&req), &uinf.ticket.user_uri, "get_file", file_id, auth_access_result);
+        return Ok(HttpResponse::new(StatusCode::from_u16(auth_access_result as u16).unwrap()));
+    }
 
     let file_item = match to_file_item(&uinf, file_id, &db, &az).await {
         Ok(file_item) => file_item,
@@ -222,8 +231,9 @@ pub(crate) async fn save_file(
     az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
+    auth_config: web::Data<AuthAccessConfig>,
 ) -> ActixResult<impl Responder> {
-    put_file(payload, None, /*bytes,*/ ticket_cache, &db, &az, req, &activity_sender, None, None).await
+    put_file(payload, None, /*bytes,*/ ticket_cache, &db, &az, req, &activity_sender, None, None, &auth_config).await
 }
 
 pub(crate) async fn put_file(
@@ -236,6 +246,7 @@ pub(crate) async fn put_file(
     activity_sender: &Arc<Mutex<Sender<UserId>>>,
     ticket: Option<String>,
     in_file_item: Option<FileItem>,
+    auth_config: &AuthAccessConfig,
 ) -> ActixResult<HttpResponse> {
     let start_time = Instant::now();
     let uinf = match get_user_info(ticket, &req, &ticket_cache, db, activity_sender).await {
@@ -246,8 +257,8 @@ pub(crate) async fn put_file(
         },
     };
 
-    if az.lock().await.authorize("v-s:File", &uinf.user_id, Access::CanCreate as u8, false).unwrap_or(0) != Access::CanCreate as u8 {
-        log(Some(&start_time), &uinf, "upload_file", &format!("user [{}] is not allowed to upload files", uinf.user_id), ResultCode::Ok);
+    if az.lock().await.authorize("v-s:File", &uinf.ticket.user_uri, Access::CanCreate as u8, false).unwrap_or(0) != Access::CanCreate as u8 {
+        log(Some(&start_time), &uinf, "upload_file", &format!("user [{}] is not allowed to upload files", uinf.ticket.user_uri), ResultCode::Ok);
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotAuthorized as u16).unwrap()));
     }
 
@@ -308,6 +319,13 @@ pub(crate) async fn put_file(
             AsyncWriteExt::close(ff).await?;
         }
     } else if !fi.path.is_empty() && !fi.id.is_empty() {
+        // Check auth method access restrictions for this file resource
+        let auth_access_result = validate_auth_method_access(&uinf, &fi.id, None, &auth_config).await;
+        if auth_access_result != ResultCode::Ok {
+            log_w(Some(&start_time), &get_ticket(&req, &None), &extract_addr(&req), &uinf.ticket.user_uri, "upload_file", &fi.id, auth_access_result);
+            return Ok(HttpResponse::new(StatusCode::from_u16(auth_access_result as u16).unwrap()));
+        }
+
         if Path::new(&tmp_file_path).exists().await {
             let _ = async_std::fs::create_dir_all(&dest_file_path).await;
             debug!("ren file {file_full_name} <- {tmp_file_path}");
@@ -410,7 +428,7 @@ pub async fn update_unlock_info(fi: &FileItem, uinf: UserInfo, mstorage: web::Da
     indv.set_id(&fi.info_id);
     indv.set_datetime("v-s:lockedDateTo", Utc.timestamp_opt(0, 0).unwrap().timestamp());
 
-    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv).result
+    ms.update(&uinf.ticket.id, IndvOp::SetIn, &indv).result
 }
 
 pub async fn update_lock_info(token: &str, fi: &FileItem, uinf: UserInfo, mstorage: web::Data<Mutex<MStorageClient>>) -> ResultCode {
@@ -424,8 +442,8 @@ pub async fn update_lock_info(token: &str, fi: &FileItem, uinf: UserInfo, mstora
     let mut indv = Individual::default();
     indv.set_id(&fi.info_id);
     indv.set_datetime("v-s:lockedDateTo", (Utc::now().naive_utc() + Duration::seconds(LOCK_TIMEOUT)).timestamp());
-    indv.set_uri("v-s:lockedBy", &uinf.user_id);
+    indv.set_uri("v-s:lockedBy", &uinf.ticket.user_uri);
     indv.set_string("v-s:lockId", token, Lang::none());
 
-    ms.update(&uinf.ticket.unwrap_or_default(), IndvOp::SetIn, &indv).result
+    ms.update(&uinf.ticket.id, IndvOp::SetIn, &indv).result
 }

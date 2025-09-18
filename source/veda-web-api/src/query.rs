@@ -20,7 +20,7 @@ use v_common::search::sparql_client::SparqlClient;
 use v_common::search::sparql_params::prepare_sparql_params;
 use v_common::search::sql_params::parse_sql_query_arguments;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
-use v_common::v_api::obj::{OptAuthorize, ResultCode};
+use v_common::v_api::common_type::{OptAuthorize, ResultCode};
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::json2individual::parse_json_to_individual;
 use v_individual_model::onto::onto_index::OntoIndex;
@@ -84,7 +84,7 @@ async fn query(
     _az: web::Data<Mutex<LmdbAzContext>>,
     prefix_cache: web::Data<PrefixesCache>,
 ) -> io::Result<HttpResponse> {
-    if uinf.ticket.is_none() {
+    if uinf.ticket.id.is_empty() {
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotAuthorized as u16).unwrap()));
     }
     direct_query_impl(uinf, data, query_endpoints, db, &prefix_cache).await
@@ -107,7 +107,7 @@ pub(crate) async fn stored_query(
             return Ok(HttpResponse::new(StatusCode::from_u16(res as u16).unwrap()));
         },
     };
-    if uinf.ticket.is_none() {
+    if uinf.ticket.id.is_empty() {
         return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::NotAuthorized as u16).unwrap()));
     }
     stored_query_impl(uinf, data, query_endpoints, db, az, prefix_cache).await
@@ -131,7 +131,7 @@ async fn stored_query_impl(
             return Ok(HttpResponse::new(StatusCode::from_u16(ResultCode::BadRequest as u16).unwrap()));
         };
 
-        let (mut stored_query_indv, res_code) = get_individual_from_db(&stored_query_id, &uinf.user_id, &db, Some(&az)).await?;
+        let (mut stored_query_indv, res_code) = get_individual_from_db(&stored_query_id, &uinf.ticket.user_uri, &db, Some(&az)).await?;
         if res_code != ResultCode::Ok {
             return Ok(HttpResponse::new(StatusCode::from_u16(res_code as u16).unwrap()));
         }
@@ -174,7 +174,7 @@ async fn stored_query_impl(
                 "clickhouse" => {
                     if let Ok(sql) = parse_sql_query_arguments(&query_string, &mut params, &source) {
                         //info!("{sql}");
-                        let res = query_endpoints.ch_client.lock().await.query_select_async(&uinf.user_id, &sql, result_format, authorization_level, &az).await?;
+                        let res = query_endpoints.ch_client.lock().await.query_select_async(&uinf.ticket.user_uri, &sql, result_format, authorization_level, &az).await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
                         return Ok(HttpResponse::Ok().json(res));
                     }
@@ -190,7 +190,7 @@ async fn stored_query_impl(
                             .sparql_client
                             .lock()
                             .await
-                            .query_select(&uinf.user_id, sparql, result_format, authorization_level, &az, &prefix_cache)
+                            .query_select(&uinf.ticket.user_uri, sparql, result_format, authorization_level, &az, &prefix_cache)
                             .await?;
                         log(Some(&start_time), &uinf, "stored_query", &stored_query_id, ResultCode::Ok);
                         return Ok(HttpResponse::Ok().json(res));
@@ -220,17 +220,17 @@ async fn direct_query_impl(
     prefix_cache: &PrefixesCache,
 ) -> io::Result<HttpResponse> {
     let mut res = QueryResult::default();
-    let ticket_id = uinf.ticket.clone().unwrap_or_default();
+    let ticket_id = uinf.ticket.id.clone();
 
     if data.sparql.is_some() {
         if prefix_cache.full2short_r.is_empty() {
             load_prefixes(&db, &prefix_cache).await;
         }
-        res = query_endpoints.sparql_client.lock().await.query_select_ids(&uinf.user_id, data.sparql.clone().unwrap(), prefix_cache).await;
+        res = query_endpoints.sparql_client.lock().await.query_select_ids(&uinf.ticket.user_uri, data.sparql.clone().unwrap(), prefix_cache).await;
     } else if data.sql.is_some() {
         let mut req = FTQuery {
             ticket: String::new(),
-            user: uinf.user_id.clone(),
+            user: uinf.ticket.user_uri.clone(),
             query: data.sql.clone().unwrap_or_default(),
             sort: String::new(),
             databases: String::new(),
@@ -267,7 +267,7 @@ async fn direct_query_impl(
 
         let mut res_out_list = vec![];
 
-        req.user = uinf.user_id.clone();
+        req.user = uinf.ticket.user_uri.clone();
 
         if !(req.query.contains("==") || req.query.contains("&&") || req.query.contains("||")) {
             req.query = "'*' == '".to_owned() + &req.query + "'";
@@ -304,7 +304,7 @@ async fn direct_query_impl(
             },
             VQLClientConnectType::Http => {
                 if let Some(n) = vc.http_client.as_mut() {
-                    res = n.query(&uinf.ticket, &uinf.addr, req).await;
+                    res = n.query(&ticket_id, &uinf.addr, req).await;
                 }
             },
             VQLClientConnectType::Nng => {

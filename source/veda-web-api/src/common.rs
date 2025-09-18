@@ -7,6 +7,7 @@ use config::{Config, File};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use futures::SinkExt;
+use log::{error, info, warn};
 use rusty_tarantool::tarantool::{ClientConfig, IteratorType};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,10 +18,12 @@ use std::time::Instant;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::ticket::Ticket;
 use v_common::search::ft_client::FTClient;
-use v_common::storage::async_storage::{get_individual_from_db, get_individual_use_storage_id, AStorage, TICKETS_SPACE_ID};
-use v_common::storage::common::{Storage, StorageId, StorageMode};
-use v_common::storage::lmdb_storage::LMDBStorage;
-use v_common::v_api::obj::ResultCode;
+use v_common::storage::async_storage::{check_user_in_group, get_individual_from_db, get_individual_use_storage_id, AStorage, TICKETS_SPACE_ID};
+use v_storage::{Storage, StorageId, StorageMode};
+use v_storage::lmdb_storage::LMDBStorage;
+use v_common::v_api::common_type::ResultCode;
+use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_common::v_authorization::common::{Access, AuthorizationContext, Trace};
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::parser::parse_raw;
 
@@ -39,7 +42,7 @@ pub struct UserContextCache {
     pub read_tickets: evmap::ReadHandle<String, Ticket>,
     pub write_tickets: Arc<Mutex<evmap::WriteHandle<String, Ticket>>>,
     pub check_ticket_ip: bool,
-    pub are_external_users: bool,
+    pub check_external_users: bool,
 }
 
 pub(crate) enum VQLClientConnectType {
@@ -69,10 +72,8 @@ impl Default for VQLClient {
 
 #[derive(Default)]
 pub struct UserInfo {
-    pub ticket: Option<String>,
+    pub ticket: Ticket,
     pub addr: Option<IpAddr>,
-    pub user_id: String,
-    pub end_time: i64,
 }
 
 pub async fn get_user_info(
@@ -92,10 +93,8 @@ pub async fn get_user_info(
     let ticket = check_ticket(&ticket_id, ticket_cache, &addr, db, activity_sender).await?;
 
     Ok(UserInfo {
-        ticket: ticket_id,
-        addr,
-        user_id: ticket.user_uri,
-        end_time: ticket.end_time,
+        ticket,
+        addr
     })
 }
 
@@ -201,6 +200,29 @@ pub(crate) fn extract_addr(req: &HttpRequest) -> Option<IpAddr> {
     None
 }
 
+pub(crate) fn extract_initiator(req: &HttpRequest) -> Option<String> {
+    // Try Referer header first
+    if let Some(referer) = req.headers().get(actix_web::http::header::REFERER) {
+        if let Ok(referer_str) = referer.to_str() {
+            if !referer_str.is_empty() {
+                return Some(referer_str.to_string());
+            }
+        }
+    }
+    
+    // Try Origin header as fallback
+    if let Some(origin) = req.headers().get(actix_web::http::header::ORIGIN) {
+        if let Ok(origin_str) = origin.to_str() {
+            if !origin_str.is_empty() {
+                return Some(origin_str.to_string());
+            }
+        }
+    }
+    
+    // No valid URL found
+    None
+}
+
 pub(crate) fn log_w(start_time: Option<&Instant>, ticket: &Option<String>, addr: &Option<IpAddr>, user_id: &str, operation: &str, args: &str, res: ResultCode) {
     let ip = if let Some(a) = addr {
         a.to_string()
@@ -244,7 +266,12 @@ pub(crate) fn log_w(start_time: Option<&Instant>, ticket: &Option<String>, addr:
 }
 
 pub(crate) fn log(start_time: Option<&Instant>, uinf: &UserInfo, operation: &str, args: &str, res: ResultCode) {
-    log_w(start_time, &uinf.ticket, &uinf.addr, &uinf.user_id, operation, args, res);
+    let t = if uinf.ticket.id.is_empty() {
+        None
+    } else {
+        Some(uinf.ticket.id.clone())
+    };
+    log_w(start_time, &t, &uinf.addr, &uinf.ticket.user_uri, operation, args, res);
 }
 
 pub(crate) async fn check_ticket(
@@ -263,6 +290,10 @@ pub(crate) async fn check_ticket(
             start_time: 0,
             end_time: 0,
             user_addr: "".to_string(),
+            auth_method: "".to_string(),
+            domain: "".to_string(),
+            initiator: "".to_string(),
+            auth_origin: "".to_string(),
         });
     }
 
@@ -276,6 +307,10 @@ pub(crate) async fn check_ticket(
             start_time: 0,
             end_time: 0,
             user_addr: "".to_string(),
+            auth_method: "".to_string(),
+            domain: "".to_string(),
+            initiator: "".to_string(),
+            auth_origin: "".to_string(),
         });
     }
 
@@ -298,8 +333,8 @@ pub(crate) async fn check_ticket(
 
         let user_uri = ticket_obj.user_uri.clone();
 
-        if user_context_cache.are_external_users {
-            check_external_user(&user_uri, db).await?;
+        if user_context_cache.check_external_users {
+            check_external_enter(&ticket_obj, db).await?;
         }
 
         send_user_activity(activity_sender, &user_uri).await;
@@ -350,7 +385,7 @@ async fn read_ticket_obj(ticket_id: &str, db: &AStorage) -> Result<Ticket, Resul
     }
     if let Some(lmdb) = &db.lmdb {
         let mut to = Individual::default();
-        if lmdb.lock().await.get_individual_from_db(StorageId::Tickets, ticket_id, &mut to) == ResultCode::Ok {
+        if lmdb.lock().await.get_individual(StorageId::Tickets, ticket_id, &mut to).is_ok() {
             ticket_obj.update_from_individual(&mut to);
             ticket_obj.result = ResultCode::Ok;
         }
@@ -361,24 +396,28 @@ async fn read_ticket_obj(ticket_id: &str, db: &AStorage) -> Result<Ticket, Resul
     Ok(ticket_obj)
 }
 
-pub(crate) async fn check_external_user(user_uri: &str, db: &AStorage) -> Result<(), ResultCode> {
-    if let Ok((mut user_indv, res)) = get_individual_from_db(user_uri, "", db, None).await {
+pub(crate) async fn check_external_enter(ticket: &Ticket, db: &AStorage) -> Result<(), ResultCode> {
+    if ticket.auth_method.to_uppercase() == "SMS" && ticket.auth_origin.to_uppercase() == "MOBILE" {
+        return Ok(());
+    }
+
+    if let Ok((mut user_indv, res)) = get_individual_from_db(&ticket.user_uri, "", db, None).await {
         if res == ResultCode::Ok {
             if let Some(o) = user_indv.get_first_literal("v-s:origin") {
                 if o != "ExternalUser" {
-                    error!("user {user_uri} is not external");
+                    error!("user {} is not external", ticket.user_uri);
                     return Err(ResultCode::AuthenticationFailed);
                 }
             } else {
-                error!("user {user_uri} not content field [origin]");
+                error!("user {} not content field [origin]", ticket.user_uri);
                 return Err(ResultCode::AuthenticationFailed);
             }
         } else {
-            error!("fail read user {user_uri}, err={res:?}");
+            error!("fail read user {}, err={res:?}", ticket.user_uri);
             return Err(ResultCode::AuthenticationFailed);
         }
     } else {
-        error!("fail read user {user_uri}");
+        error!("fail read user {}", ticket.user_uri);
         return Err(ResultCode::AuthenticationFailed);
     }
     Ok(())
@@ -410,4 +449,165 @@ impl TranscriptionConfig {
 
         Ok(config.try_deserialize()?)
     }
+}
+
+/// Configuration for authentication method access restrictions
+#[derive(Debug, Clone)]
+pub struct AuthAccessConfig {
+    pub restrictions: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl Default for AuthAccessConfig {
+    fn default() -> Self {
+        // No default restrictions - all restrictions should be explicitly configured
+        Self { 
+            restrictions: std::collections::HashMap::new() 
+        }
+    }
+}
+
+/// Load authentication method access configuration from config file
+pub fn load_auth_access_config() -> AuthAccessConfig {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    use std::collections::HashMap;
+
+    let mut restrictions = HashMap::new();
+
+    if let Ok(file) = File::open("config/veda-web-api.ini") {
+        let reader = BufReader::new(file);
+        let mut current_section = String::new();
+        
+        for line in reader.lines().filter_map(|l| l.ok()) {
+            let line = line.trim();
+            
+            // Check if this is a section header
+            if line.starts_with('[') && line.ends_with(']') {
+                current_section = line[1..line.len()-1].to_string();
+                continue;
+            }
+            
+            // Check if this is an allowed_groups line in any section
+            if !current_section.is_empty() && line.starts_with("allowed_groups") {
+                if let Some(equals_pos) = line.find('=') {
+                    let groups_str = &line[equals_pos + 1..].trim();
+                    
+                    let groups: Vec<String> = groups_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !groups.is_empty() {
+                        restrictions.insert(current_section.clone(), groups);
+                    }
+                }
+            }
+        }
+    }
+    
+    AuthAccessConfig { restrictions }
+}
+
+/// Check if resource belongs to allowed groups for authentication method
+/// Returns true if access is allowed, false if access should be denied
+pub async fn check_auth_method_resource_access(
+    resource_uri: &str,
+    auth_method: &str,
+    az_context: Option<&web::Data<Mutex<LmdbAzContext>>>,
+    config: &AuthAccessConfig,
+) -> Result<bool, ResultCode> {
+    // If no authorization context available, deny access by default
+    let Some(az) = az_context else {
+        return Ok(false);
+    };
+
+    // Get allowed groups for this authentication method
+    let Some(allowed_groups) = config.restrictions.get(auth_method) else {
+        // No restrictions for this auth method
+        return Ok(true);
+    };
+
+    // Log the access attempt for audit purposes
+    info!("Checking {} auth access to resource {}", auth_method, resource_uri);
+
+    // Check if resource belongs to any of the allowed groups
+    for group in allowed_groups {
+        match check_object_in_group(resource_uri, group, Some(az)).await {
+            Ok(true) => {
+                // Resource is in an allowed group
+                info!("{} access granted to resource {} - resource in group {}", 
+                      auth_method, resource_uri, group);
+                return Ok(true);
+            }
+            Ok(false) => continue,
+            Err(_) => continue,
+        }
+    }
+
+    // Resource is not in any allowed group
+    Ok(false)
+}
+
+/// Check if authentication method access restrictions should be applied and validate access
+/// Returns ResultCode::Ok if access allowed, error code if denied
+pub async fn validate_auth_method_access(
+    user_info: &UserInfo,
+    resource_uri: &str,
+    az_context: Option<&web::Data<Mutex<LmdbAzContext>>>,
+    config: &AuthAccessConfig,
+) -> ResultCode {
+    // Skip empty auth methods
+    if user_info.ticket.auth_method.is_empty() {
+        return ResultCode::Ok;
+    }
+
+    // Check if there are restrictions for this auth method
+    if !config.restrictions.contains_key(&user_info.ticket.auth_method) {
+        return ResultCode::Ok;
+    }
+
+    match check_auth_method_resource_access(resource_uri, &user_info.ticket.auth_method, az_context, config).await {
+        Ok(true) => ResultCode::Ok,
+        Ok(false) => {
+            if let Some(allowed_groups) = config.restrictions.get(&user_info.ticket.auth_method) {
+                warn!("{} user {} denied access to resource {}: resource not in allowed groups {:?}",
+                      user_info.ticket.auth_method, user_info.ticket.user_uri, resource_uri, allowed_groups);
+            }
+            ResultCode::NotAuthorized
+        },
+        Err(e) => {
+            error!("Error checking {} resource access for user {}: {:?}",
+                   user_info.ticket.auth_method, user_info.ticket.user_uri, e);
+            ResultCode::InternalServerError
+        }
+    }
+}
+
+/// Check if an object belongs to a specific group
+/// Uses system user for authorization context since we only care about object's group membership
+pub async fn check_object_in_group(object_id: &str, group_id: &str, az: Option<&web::Data<Mutex<LmdbAzContext>>>) -> io::Result<bool> {
+    if let Some(a) = az {
+        let mut tr = Trace {
+            acl: &mut "".to_string(),
+            is_acl: false,
+            group: &mut String::new(),
+            is_group: true,
+            info: &mut "".to_string(),
+            is_info: false,
+            str_num: 0,
+        };
+        // Use system user for authorization context to get object's group membership
+        // We don't care about user permissions here, only object's groups
+        if a.lock().await.authorize_and_trace(object_id, "cfg:VedaSystem", Access::CanRead as u8, false, &mut tr).is_ok() {
+            for gr in tr.group.split('\n') {
+                if gr.trim() == group_id {
+                    return Ok(true);
+                }
+            }
+        } else {
+            return Err(Error::new(ErrorKind::Other, "fail authorize_and_trace for object"));
+        }
+    }
+
+    Ok(false)
 }
