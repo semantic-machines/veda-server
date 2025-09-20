@@ -13,6 +13,10 @@ pub struct DispatcherConfig {
     pub sleep_empty_sec: f64,
     pub worker_module: String,
     pub worker_args_template: String,
+    pub worker_log_dir: String,
+    pub worker_pids_dir: String,
+    pub worker_virtual_env: Option<String>,
+    pub default_path: String,
 }
 
 impl Default for DispatcherConfig {
@@ -26,6 +30,10 @@ impl Default for DispatcherConfig {
             sleep_empty_sec: 0.5,
             worker_module: "python3 -m src.queue_worker".to_string(),
             worker_args_template: "--base {worker_base_path} --sub {sub_queue_name} --src queue-shard-distributor --sleep-empty {sleep_empty_sec}".to_string(),
+            worker_log_dir: "./logs/workers".to_string(),
+            worker_pids_dir: "./data/worker_pids".to_string(),
+            worker_virtual_env: None,
+            default_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
         }
     }
 }
@@ -45,6 +53,12 @@ pub fn write_default_config_to_ini(ini_path: &str, config: &DispatcherConfig) ->
     ini.set("worker", "sleep_empty_sec", Some(config.sleep_empty_sec.to_string()));
     ini.set("worker", "worker_module", Some(config.worker_module.clone()));
     ini.set("worker", "worker_args_template", Some(config.worker_args_template.clone()));
+    ini.set("worker", "worker_log_dir", Some(config.worker_log_dir.clone()));
+    ini.set("worker", "worker_pids_dir", Some(config.worker_pids_dir.clone()));
+    if let Some(ref venv) = config.worker_virtual_env {
+        ini.set("worker", "worker_virtual_env", Some(venv.clone()));
+    }
+    ini.set("worker", "default_path", Some(config.default_path.clone()));
 
     // Create directory if it doesn't exist
     if let Some(parent_dir) = Path::new(ini_path).parent() {
@@ -121,6 +135,26 @@ pub fn read_config_from_ini(ini_path: &str) -> DispatcherConfig {
             if let Some(worker_args_template) = ini.get("worker", "worker_args_template") {
                 config.worker_args_template = worker_args_template;
                 info!("Config: worker_args_template = {}", config.worker_args_template);
+            }
+
+            if let Some(worker_log_dir) = ini.get("worker", "worker_log_dir") {
+                config.worker_log_dir = worker_log_dir;
+                info!("Config: worker_log_dir = {}", config.worker_log_dir);
+            }
+
+            if let Some(worker_pids_dir) = ini.get("worker", "worker_pids_dir") {
+                config.worker_pids_dir = worker_pids_dir;
+                info!("Config: worker_pids_dir = {}", config.worker_pids_dir);
+            }
+
+            if let Some(worker_virtual_env) = ini.get("worker", "worker_virtual_env") {
+                config.worker_virtual_env = Some(worker_virtual_env);
+                info!("Config: worker_virtual_env = {:?}", config.worker_virtual_env);
+            }
+
+            if let Some(default_path) = ini.get("worker", "default_path") {
+                config.default_path = default_path;
+                info!("Config: default_path = {}", config.default_path);
             }
         },
         Err(e) => {

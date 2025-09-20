@@ -4,8 +4,8 @@ use v_common::v_queue::record::Mode;
 
 // Load balancer with worker load tracking
 pub struct LoadBalancer {
-    current_index: u32,
-    worker_consumers: HashMap<u32, Consumer>,
+    current_index: usize,
+    worker_consumers: HashMap<String, Consumer>,
 }
 
 impl LoadBalancer {
@@ -16,28 +16,29 @@ impl LoadBalancer {
         }
     }
 
-    pub fn get_next_shard(&mut self, total_shards: u32) -> Option<u32> {
-        if total_shards == 0 {
+    pub fn get_next_worker(&mut self, worker_ids: &[String]) -> Option<String> {
+        if worker_ids.is_empty() {
             return None;
         }
 
-        if total_shards == 1 {
-            return Some(0);
+        if worker_ids.len() == 1 {
+            return Some(worker_ids[0].clone());
         }
 
-        // Find first available shard starting from last used index
-        let start_index = self.current_index % total_shards;
+        // Find first available worker starting from last used index
+        let start_index = self.current_index % worker_ids.len();
         let mut fallback_to_round_robin = false;
-        let mut first_available_shard = None;
+        let mut first_available_worker = None;
 
-        // Check all shards starting from last used index
-        for i in 0..total_shards {
-            let shard_id = (start_index + i) % total_shards;
+        // Check all workers starting from last used index
+        for i in 0..worker_ids.len() {
+            let worker_index = (start_index + i) % worker_ids.len();
+            let worker_id = &worker_ids[worker_index];
 
-            if let Some(consumer) = self.worker_consumers.get_mut(&shard_id) {
+            if let Some(consumer) = self.worker_consumers.get_mut(worker_id) {
                 // Try to get fresh queue info
                 if !consumer.queue.get_info_queue() {
-                    warn!("Failed to get queue info for shard {}, falling back to round-robin", shard_id);
+                    warn!("Failed to get queue info for worker {}, falling back to round-robin", worker_id);
                     fallback_to_round_robin = true;
                     break;
                 }
@@ -50,23 +51,23 @@ impl LoadBalancer {
                     0  // Consumer ahead of queue (shouldn't happen normally)
                 };
 
-                debug!("Shard {} load: queue_pushed={}, count_popped={}, load={}",
-                       shard_id, queue_size, processed_count, current_load);
+                debug!("Worker {} load: queue_pushed={}, count_popped={}, load={}",
+                       worker_id, queue_size, processed_count, current_load);
 
-                // Remember first available shard if we haven't found one yet
-                if first_available_shard.is_none() {
-                    first_available_shard = Some(shard_id);
+                // Remember first available worker if we haven't found one yet
+                if first_available_worker.is_none() {
+                    first_available_worker = Some(worker_id.clone());
                 }
 
-                // If this shard is free (no load), use it immediately
+                // If this worker is free (no load), use it immediately
                 if current_load == 0 {
-                    self.current_index = shard_id + 1;
-                    info!("Selected free shard {}", shard_id);
-                    return Some(shard_id);
+                    self.current_index = worker_index + 1;
+                    info!("Selected free worker {}", worker_id);
+                    return Some(worker_id.clone());
                 }
             } else {
-                // No consumer for this shard - skip it as defective
-                warn!("Skipping shard {} - no consumer found (defective shard)", shard_id);
+                // No consumer for this worker - skip it as defective
+                warn!("Skipping worker {} - no consumer found (defective worker)", worker_id);
                 continue;
             }
         }
@@ -74,49 +75,54 @@ impl LoadBalancer {
         if fallback_to_round_robin {
             // Fallback to round-robin if load tracking fails
             warn!("Falling back to round-robin distribution");
-            let shard = self.current_index % total_shards;
-            self.current_index = (self.current_index + 1) % total_shards;
-            return Some(shard);
+            let worker_index = self.current_index % worker_ids.len();
+            self.current_index = (self.current_index + 1) % worker_ids.len();
+            return Some(worker_ids[worker_index].clone());
         }
 
-        // No free shard found, use first available
-        if let Some(selected_shard) = first_available_shard {
-            self.current_index = selected_shard + 1;
-            info!("No free shard found, selected first available shard {}", selected_shard);
-            Some(selected_shard)
+        // No free worker found, use first available
+        if let Some(selected_worker) = first_available_worker {
+            // Update index for next round-robin
+            if let Some(pos) = worker_ids.iter().position(|w| w == &selected_worker) {
+                self.current_index = pos + 1;
+            }
+            info!("No free worker found, selected first available worker {}", selected_worker);
+            Some(selected_worker)
         } else {
-            // All shards are defective (no consumers), cannot distribute
-            error!("All shards are defective (no consumers found), cannot distribute message");
+            // All workers are defective (no consumers), cannot distribute
+            error!("All workers are defective (no consumers found), cannot distribute message");
             None
         }
     }
 
-    pub fn update_worker_consumers(&mut self, total_shards: u32, worker_base_path: &str, sub_queue_prefix: &str) {
-        // Clean up consumers for shards that no longer exist
+    pub fn update_worker_consumers(&mut self, active_workers: &[(String, String)], worker_base_path: &str) {
+        // Get current worker IDs
+        let current_worker_ids: std::collections::HashSet<String> = active_workers.iter().map(|(worker_id, _)| worker_id.clone()).collect();
+        
+        // Clean up consumers for workers that no longer exist
         let mut to_remove = Vec::new();
-        for &shard_id in self.worker_consumers.keys() {
-            if shard_id >= total_shards {
-                to_remove.push(shard_id);
+        for worker_id in self.worker_consumers.keys() {
+            if !current_worker_ids.contains(worker_id) {
+                to_remove.push(worker_id.clone());
             }
         }
-        for shard_id in to_remove {
-            self.worker_consumers.remove(&shard_id);
-            info!("Removed consumer for shard {} (worker no longer active)", shard_id);
+        for worker_id in to_remove {
+            self.worker_consumers.remove(&worker_id);
+            info!("Removed consumer for worker {} (no longer active)", worker_id);
         }
 
-        // Create consumers for new shards
-        for shard_id in 0..total_shards {
-            if !self.worker_consumers.contains_key(&shard_id) {
-                let sub_queue_name = format!("{}-{}", sub_queue_prefix, shard_id);
-                let consumer_name = format!("load-balancer-{}", shard_id);
+        // Create consumers for active workers
+        for (worker_id, queue_name) in active_workers {
+            if !self.worker_consumers.contains_key(worker_id) {
+                let consumer_name = format!("load-balancer-{}", worker_id);
 
-                match Consumer::new_with_mode(worker_base_path, &consumer_name, &sub_queue_name, Mode::Read) {
+                match Consumer::new_with_mode(worker_base_path, &consumer_name, queue_name, Mode::Read) {
                     Ok(consumer) => {
-                        info!("Created readonly consumer for shard {}: {}", shard_id, sub_queue_name);
-                        self.worker_consumers.insert(shard_id, consumer);
+                        info!("Created readonly consumer for worker {}: {}", worker_id, queue_name);
+                        self.worker_consumers.insert(worker_id.clone(), consumer);
                     },
                     Err(e) => {
-                        warn!("Failed to create consumer for shard {} ({}): {:?}", shard_id, sub_queue_name, e);
+                        warn!("Failed to create consumer for worker {} ({}): {:?}", worker_id, queue_name, e);
                     }
                 }
             }

@@ -24,7 +24,7 @@ pub struct QueueShardDistributor {
     config: DispatcherConfig,
     worker_manager: WorkerManager, 
     load_balancer: LoadBalancer,
-    sub_queue_cache: HashMap<u32, Queue>,
+    sub_queue_cache: HashMap<String, Queue>,
     module_info: ModuleInfo,
 }
 
@@ -46,18 +46,38 @@ impl QueueShardDistributor {
         })
     }
 
-    fn get_or_create_sub_queue(&mut self, shard_index: u32) -> Result<&mut Queue, Box<dyn std::error::Error>> {
-        if !self.sub_queue_cache.contains_key(&shard_index) {
-            let sub_queue_name = format!("{}-{}", self.config.sub_queue_prefix, shard_index);
+    fn get_or_create_sub_queue(&mut self, worker_id: &str) -> Result<&mut Queue, Box<dyn std::error::Error>> {
+        if !self.sub_queue_cache.contains_key(worker_id) {
+            let sub_queue_name = format!("{}-{}", self.config.sub_queue_prefix, worker_id);
+            
             info!("Creating sub-queue: {} in {}", sub_queue_name, self.config.worker_base_path);
             
             let queue = Queue::new(&self.config.worker_base_path, &sub_queue_name, Mode::ReadWrite)
                 .map_err(|e| format!("Failed to create sub-queue {}: {:?}", sub_queue_name, e))?;
             
-            self.sub_queue_cache.insert(shard_index, queue);
+            self.sub_queue_cache.insert(worker_id.to_string(), queue);
         }
         
-        Ok(self.sub_queue_cache.get_mut(&shard_index).unwrap())
+        Ok(self.sub_queue_cache.get_mut(worker_id).unwrap())
+    }
+
+    fn ensure_sub_queues_exist_for_active_workers(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let active_workers = self.worker_manager.get_active_workers();
+        info!("Ensuring sub-queues exist for {} active workers", active_workers.len());
+        
+        for (worker_id, sub_queue_name) in active_workers {
+            if !self.sub_queue_cache.contains_key(&worker_id) {
+                info!("Pre-creating sub-queue: {} in {}", sub_queue_name, self.config.worker_base_path);
+                
+                let queue = Queue::new(&self.config.worker_base_path, &sub_queue_name, Mode::ReadWrite)
+                    .map_err(|e| format!("Failed to pre-create sub-queue {}: {:?}", sub_queue_name, e))?;
+                
+                self.sub_queue_cache.insert(worker_id, queue);
+            }
+        }
+        
+        info!("Successfully ensured sub-queues exist for active workers");
+        Ok(())
     }
 }
 
@@ -77,29 +97,31 @@ impl VedaQueueModule for QueueShardDistributor {
             "unknown".to_string()
         };
 
-        // Get current worker count and select target shard
-        let worker_count = self.worker_manager.get_active_worker_count();
-        let target_shard = loop {
-            match self.load_balancer.get_next_shard(worker_count) {
-                Some(shard) => break shard,
+        // Get current workers and select target worker
+        let worker_ids = self.worker_manager.get_worker_ids();
+        let worker_count = worker_ids.len();
+        let target_worker = loop {
+            match self.load_balancer.get_next_worker(&worker_ids) {
+                Some(worker) => break worker,
                 None => {
-                    error!("No healthy shards available for message distribution (op_id={}), waiting 30 seconds before retry", op_id);
+                    error!("No healthy workers available for message distribution (op_id={}), waiting 30 seconds before retry", op_id);
                     std::thread::sleep(std::time::Duration::from_secs(30));
-                    // Update worker consumers to check for new healthy shards
-                    self.load_balancer.update_worker_consumers(worker_count, &self.config.worker_base_path, &self.config.sub_queue_prefix);
+                    // Update worker consumers to check for new healthy workers
+                    let active_workers = self.worker_manager.get_active_workers();
+                    self.load_balancer.update_worker_consumers(&active_workers, &self.config.worker_base_path);
                     continue;
                 }
             }
         };
         
-        info!("Distributing message (op_id={}) to shard {} (of {} workers), individual: {}", 
-              op_id, target_shard, worker_count, individual_id);
+        info!("Distributing message (op_id={}) to worker {} (of {} workers), individual: {}", 
+              op_id, target_worker, worker_count, individual_id);
 
         // Get or create target sub-queue
-        let target_queue = match self.get_or_create_sub_queue(target_shard) {
+        let target_queue = match self.get_or_create_sub_queue(&target_worker) {
             Ok(queue) => queue,
             Err(e) => {
-                error!("Failed to get sub-queue for shard {}: {}", target_shard, e);
+                error!("Failed to get sub-queue for worker {}: {}", target_worker, e);
                 // Return Ok(false) to skip this message but continue processing
                 return Ok(false);
             }
@@ -116,8 +138,8 @@ impl VedaQueueModule for QueueShardDistributor {
 
         // Push message to sub-queue (transactional - only succeeds if write is successful)
         if let Err(e) = target_queue.push(serialized_data, MsgType::Object) {
-            error!("Failed to push message to sub-queue shard {}, op_id = {}: {:?}", 
-                   target_shard, op_id, e);
+            error!("Failed to push message to sub-queue worker {}, op_id = {}: {:?}", 
+                   target_worker, op_id, e);
             // Skip this message but continue processing
             return Ok(false);
         }
@@ -129,7 +151,7 @@ impl VedaQueueModule for QueueShardDistributor {
             return Err(PrepareError::Fatal);
         }
 
-        info!("Successfully distributed message op_id={} to shard {}", op_id, target_shard);
+        info!("Successfully distributed message op_id={} to worker {}", op_id, target_worker);
         Ok(true)
     }
 
@@ -142,9 +164,15 @@ impl VedaQueueModule for QueueShardDistributor {
         self.worker_manager.cleanup_dead_workers();
         self.worker_manager.ensure_minimum_workers();
         
-        // Update load balancer consumers to match current worker count
-        let worker_count = self.worker_manager.get_active_worker_count();
-        self.load_balancer.update_worker_consumers(worker_count, &self.config.worker_base_path, &self.config.sub_queue_prefix);
+        // Ensure sub-queues exist for all active workers
+        if let Err(e) = self.ensure_sub_queues_exist_for_active_workers() {
+            warn!("Failed to ensure sub-queues exist during heartbeat: {}", e);
+            // Don't return error, just log warning - continue with heartbeat
+        }
+        
+        // Update load balancer consumers to match active workers
+        let active_workers = self.worker_manager.get_active_workers();
+        self.load_balancer.update_worker_consumers(&active_workers, &self.config.worker_base_path);
         
         Ok(())
     }
@@ -152,12 +180,18 @@ impl VedaQueueModule for QueueShardDistributor {
     fn before_start(&mut self) {
         info!("Queue Shard Distributor starting with config: {:?}", self.config);
         
-        // Ensure minimum workers at startup
+        // Ensure minimum workers at startup (this creates workers first)
         self.worker_manager.ensure_minimum_workers();
         
-        // Initialize load balancer consumers for initial workers
-        let worker_count = self.worker_manager.get_active_worker_count();
-        self.load_balancer.update_worker_consumers(worker_count, &self.config.worker_base_path, &self.config.sub_queue_prefix);
+        // Create sub-queues for active workers after workers are created
+        if let Err(e) = self.ensure_sub_queues_exist_for_active_workers() {
+            error!("Failed to ensure sub-queues exist: {}", e);
+            // Don't panic, but log the error - workers might still work if queues already exist
+        }
+        
+        // Initialize load balancer consumers for active workers
+        let active_workers = self.worker_manager.get_active_workers();
+        self.load_balancer.update_worker_consumers(&active_workers, &self.config.worker_base_path);
     }
 
     fn before_exit(&mut self) {
