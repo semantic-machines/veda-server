@@ -13,9 +13,11 @@ tokio = { version = "1.0", features = ["full"] }
 reqwest = { version = "0.11", features = ["json", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+nng = "1.0"
 configparser = "3.0"
 version = "3.0.0"
 git-version = "0.3.9"
+shell-words = "1.1"
 
 v_common = { package = "v-common", version = "=0.17.1", features = ["tokio_0_2", "tt_2", "awc_2"] }
 

@@ -1,36 +1,132 @@
+use crate::config::{substitute_template, DispatcherConfig};
+use crate::nng_client::NngClient;
+use shell_words::split as split_shell_words;
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
 use std::fs::{self, OpenOptions};
-use crate::config::{DispatcherConfig, substitute_template};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
-// Worker information structure
+// Worker state enum
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkerState {
+    Free,
+    Busy,
+    Unavailable(Instant), // Temporarily unavailable until this time
+}
+
+// Worker information structure for NNG-based workers
 #[derive(Debug, Clone)]
 pub struct WorkerInfo {
     pub unique_id: String,
     pub pid: u32,
+    pub nng_address: String,
 }
+
+// Async worker state tracker
+pub type WorkerStateMap = Arc<Mutex<HashMap<String, WorkerState>>>;
 
 // Worker process management
 #[derive(Debug)]
 pub struct WorkerManager {
     config: DispatcherConfig,
     running_workers: HashMap<String, WorkerInfo>, // worker_unique_id -> WorkerInfo
+    worker_states: WorkerStateMap,
+    base_port: u16, // Starting port for NNG workers
+    nng_client: Arc<NngClient>,
 }
 
 impl WorkerManager {
-    pub fn new(config: DispatcherConfig) -> Self {
+    pub fn new(config: DispatcherConfig, nng_client: Arc<NngClient>) -> Self {
         Self {
             config,
             running_workers: HashMap::new(),
+            worker_states: Arc::new(Mutex::new(HashMap::new())),
+            base_port: 5555, // Default starting port for NNG workers
+            nng_client,
         }
     }
-    
+
+    // Get available (free) worker, auto-restore from Unavailable if time passed
+    pub async fn get_free_worker(&self) -> Option<String> {
+        let mut states = self.worker_states.lock().await;
+        let now = Instant::now();
+
+        // First pass: restore unavailable workers whose timeout expired
+        let mut to_restore = Vec::new();
+        for (worker_id, state) in states.iter() {
+            if let WorkerState::Unavailable(until_time) = state {
+                if now >= *until_time {
+                    to_restore.push(worker_id.clone());
+                }
+            }
+        }
+
+        // Restore expired unavailable workers to Free
+        for worker_id in to_restore {
+            if self.running_workers.contains_key(&worker_id) {
+                states.insert(worker_id.clone(), WorkerState::Free);
+                info!("Worker {} restored from unavailable state", worker_id);
+            }
+        }
+
+        // Second pass: find free worker
+        for (worker_id, state) in states.iter() {
+            if *state == WorkerState::Free && self.running_workers.contains_key(worker_id) {
+                return Some(worker_id.clone());
+            }
+        }
+
+        None
+    }
+
+    // Mark worker as busy
+    pub async fn mark_worker_busy(&self, worker_id: &str) {
+        let mut states = self.worker_states.lock().await;
+        states.insert(worker_id.to_string(), WorkerState::Busy);
+    }
+
+    // Mark worker as free
+    pub async fn mark_worker_free(&self, worker_id: &str) {
+        let mut states = self.worker_states.lock().await;
+        states.insert(worker_id.to_string(), WorkerState::Free);
+    }
+
+    // Mark worker as temporarily unavailable (due to network errors)
+    pub async fn mark_worker_unavailable(&self, worker_id: &str, unavailable_duration: Duration) {
+        let mut states = self.worker_states.lock().await;
+        let until_time = Instant::now() + unavailable_duration;
+        states.insert(worker_id.to_string(), WorkerState::Unavailable(until_time));
+
+        // Count remaining available workers
+        let available_count = states
+            .iter()
+            .filter(|(id, state)| {
+                if let WorkerState::Free = state {
+                    self.running_workers.contains_key(*id)
+                } else {
+                    false
+                }
+            })
+            .count();
+
+        let active_connections = self.nng_client.get_active_connections_count().await;
+
+        warn!(
+            "Worker {} marked as unavailable for {:?} (remaining available workers: {}, active NNG sockets: {})",
+            worker_id, unavailable_duration, available_count, active_connections
+        );
+    }
+
+    // Get worker by ID
+    pub fn get_worker(&self, worker_id: &str) -> Option<&WorkerInfo> {
+        self.running_workers.get(worker_id)
+    }
+
     fn generate_unique_worker_id(&self) -> String {
         // Generate 6-character alphanumeric ID using nanoseconds timestamp
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
 
         // Use last 6 digits of nanoseconds for 6-char hex ID
         format!("{:06x}", (now % 1_000_000) as u32)
@@ -43,11 +139,7 @@ impl WorkerManager {
 
     pub fn is_process_alive(&self, pid: u32) -> bool {
         // Check if process exists by sending signal 0
-        match std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .output()
-        {
+        match std::process::Command::new("kill").arg("-0").arg(pid.to_string()).output() {
             Ok(output) => output.status.success(),
             Err(_) => false,
         }
@@ -64,69 +156,56 @@ impl WorkerManager {
 
     pub fn spawn_worker(&self) -> Result<WorkerInfo, String> {
         let worker_id = self.generate_unique_worker_id();
-        let sub_queue_name = format!("{}-{}", self.config.sub_queue_prefix, worker_id);
 
-        // Substitute variables in worker_module
-        let worker_module_processed = substitute_template(
-            &self.config.worker_module,
-            &self.config.worker_base_path,
-            &sub_queue_name,
-            self.config.sleep_empty_sec
-        );
+        // Calculate port for this worker
+        let port = self.base_port + self.running_workers.len() as u16;
+        let nng_address = format!("tcp://0.0.0.0:{}", port);
+        // Prepare substitution map for templates
+        let mut substitutions: HashMap<&str, String> = HashMap::new();
+        substitutions.insert("worker_base_path", self.config.worker_base_path.clone());
+        substitutions.insert("sleep_empty_sec", self.config.sleep_empty_sec.to_string());
+        substitutions.insert("worker_id", worker_id.clone());
+        substitutions.insert("worker_name", format!("worker-{}", worker_id));
+        substitutions.insert("nng_address", nng_address.clone());
+        substitutions.insert("src", "queue-shard-distributor".to_string());
 
-        let mut cmd = if worker_module_processed.starts_with("bash -c '") {
-            let mut cmd = Command::new("bash");
-            
-            // Extract the command inside single quotes
-            let start_quote = worker_module_processed.find('\'').unwrap();
-            let end_quote = worker_module_processed.rfind('\'').unwrap();
-            let mut bash_command = worker_module_processed[start_quote + 1..end_quote].to_string();
+        // Substitute placeholders in worker_module and worker_args_template
+        let worker_module_processed = substitute_template(&self.config.worker_module, &substitutions);
+        let worker_args_processed = substitute_template(&self.config.worker_args_template, &substitutions);
 
-            let template_args_str = substitute_template(
-                &self.config.worker_args_template,
-                &self.config.worker_base_path,
-                &sub_queue_name,
-                self.config.sleep_empty_sec
-            );
+        // Determine command and arguments, supporting shell-style definitions
+        let module_parts = split_shell_words(&worker_module_processed)
+            .map_err(|e| format!("Failed to parse worker_module '{}': {}", worker_module_processed, e))?;
 
-            // Add arguments to the bash command
-            bash_command = format!("{} {}", bash_command, template_args_str);
+        if module_parts.is_empty() {
+            return Err("worker_module configuration is empty".to_string());
+        }
 
-            let args = vec!["-c".to_string(), bash_command];
-            cmd.args(&args);
-            cmd
-        } else {
-            // Parse worker_module string to separate command and arguments
-            let parts: Vec<String> = worker_module_processed.split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
-            if parts.is_empty() {
-                return Err("worker_module configuration is empty".to_string());
+        let mut cmd = Command::new(&module_parts[0]);
+
+        if module_parts[0] == "bash" && module_parts.len() >= 3 && module_parts[1] == "-c" {
+            let mut shell_command = module_parts[2].clone();
+            if !worker_args_processed.trim().is_empty() {
+                shell_command = format!("{} {}", shell_command, worker_args_processed);
             }
 
-            let mut cmd = Command::new(&parts[0]);
-            let args: Vec<String> = parts[1..].to_vec();
+            cmd.arg("-c");
+            cmd.arg(shell_command);
 
-            // Substitute variables in template and parse arguments
-            let template_args_str = substitute_template(
-                &self.config.worker_args_template,
-                &self.config.worker_base_path,
-                &sub_queue_name,
-                self.config.sleep_empty_sec
-            );
+            if module_parts.len() > 3 {
+                cmd.args(&module_parts[3..]);
+            }
+        } else {
+            if module_parts.len() > 1 {
+                cmd.args(&module_parts[1..]);
+            }
 
-            // Split template arguments by whitespace
-            let template_args: Vec<String> = template_args_str.split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
-
-            // Combine module args with template args
-            let mut all_args = args;
-            all_args.extend(template_args);
-
-            cmd.args(&all_args);
-            cmd
-        };
+            if !worker_args_processed.trim().is_empty() {
+                let args = split_shell_words(&worker_args_processed)
+                    .map_err(|e| format!("Failed to parse worker_args '{}': {}", worker_args_processed, e))?;
+                cmd.args(args);
+            }
+        }
 
         // Set working directory to worker base path
         cmd.current_dir(&self.config.worker_base_path);
@@ -135,14 +214,12 @@ impl WorkerManager {
         if let Some(ref venv_path) = self.config.worker_virtual_env {
             cmd.env("VIRTUAL_ENV", venv_path);
             let venv_bin = format!("{}/bin", venv_path);
-            
+
             // Get current PATH and prepend venv bin directory
-            let current_path = std::env::var("PATH").unwrap_or_else(|_| 
-                self.config.default_path.clone()
-            );
+            let current_path = std::env::var("PATH").unwrap_or_else(|_| self.config.default_path.clone());
             cmd.env("PATH", format!("{}:{}", venv_bin, current_path));
         }
-        
+
         // Set PYTHONPATH environment variable (add to existing or create new)
         let worker_src_path = "./src".to_string();
         if let Ok(existing_pythonpath) = std::env::var("PYTHONPATH") {
@@ -166,23 +243,17 @@ impl WorkerManager {
             .create(true)
             .append(true)
             .open(&log_file_path)
-            .and_then(|stdout_file| {
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&error_log_file_path)
-                    .map(|stderr_file| (stdout_file, stderr_file))
-            }) 
+            .and_then(|stdout_file| OpenOptions::new().create(true).append(true).open(&error_log_file_path).map(|stderr_file| (stdout_file, stderr_file)))
         {
             Ok((stdout_file, stderr_file)) => {
                 cmd.stdout(Stdio::from(stdout_file));
                 cmd.stderr(Stdio::from(stderr_file));
-            }
+            },
             Err(e) => {
                 warn!("Failed to create log files for worker {}: {}, using null stdio", worker_id, e);
                 cmd.stdout(Stdio::null());
                 cmd.stderr(Stdio::null());
-            }
+            },
         }
 
         match cmd.spawn() {
@@ -204,39 +275,63 @@ impl WorkerManager {
                 let worker_info = WorkerInfo {
                     unique_id: worker_id.clone(),
                     pid,
+                    nng_address: nng_address.clone(),
                 };
 
-                info!("Spawned worker {} with PID {} for queue {} using command: {}. Logs: {}/worker-{}.log",
-                      worker_id, pid, sub_queue_name, self.config.worker_module, self.config.worker_log_dir, worker_id);
+                info!(
+                    "Spawned NNG worker {} with PID {} listening on {}. Logs: {}/worker-{}.log",
+                    worker_id, pid, nng_address, self.config.worker_log_dir, worker_id
+                );
                 Ok(worker_info)
-            }
+            },
             Err(e) => {
                 error!("Failed to spawn worker: {}", e);
                 Err(e.to_string())
-            }
+            },
         }
     }
 
-    pub fn spawn_new_worker(&mut self) -> Option<String> {
+    pub async fn spawn_new_worker(&mut self) -> Option<String> {
         match self.spawn_worker() {
             Ok(worker_info) => {
                 let worker_id = worker_info.unique_id.clone();
+
+                // Initialize worker state as Free
+                {
+                    let mut states = self.worker_states.lock().await;
+                    states.insert(worker_id.clone(), WorkerState::Free);
+                }
+
                 self.running_workers.insert(worker_id.clone(), worker_info);
                 Some(worker_id)
-            }
+            },
             Err(e) => {
                 error!("Failed to spawn new worker: {}", e);
                 None
-            }
+            },
         }
     }
-    
+
     fn cleanup_dead_worker(&mut self, worker_id: &str) {
         if let Some(_worker_info) = self.running_workers.remove(worker_id) {
             // Clean up PID file
             let pid_file = self.get_pid_file_path(worker_id);
             let _ = fs::remove_file(&pid_file);
-            
+
+            // Remove from worker states (blocking call)
+            let states = Arc::clone(&self.worker_states);
+            let worker_id_clone = worker_id.to_string();
+            tokio::spawn(async move {
+                let mut states = states.lock().await;
+                states.remove(&worker_id_clone);
+            });
+
+            let socket_cleanup_client = Arc::clone(&self.nng_client);
+            let socket_worker_id = worker_id.to_string();
+            tokio::spawn(async move {
+                socket_cleanup_client.cleanup_worker_socket(&socket_worker_id).await;
+            });
+
             info!("Cleaned up dead worker {}", worker_id);
         }
     }
@@ -244,7 +339,7 @@ impl WorkerManager {
     pub fn get_active_worker_count(&mut self) -> u32 {
         // Clean up dead workers first
         self.cleanup_dead_workers();
-        
+
         // Return current worker count
         self.running_workers.len() as u32
     }
@@ -265,35 +360,23 @@ impl WorkerManager {
         }
     }
 
-    pub fn ensure_minimum_workers(&mut self) {
+    pub async fn ensure_minimum_workers(&mut self) {
         let current_count = self.get_active_worker_count();
         let needed = if current_count < self.config.min_workers {
             self.config.min_workers - current_count
         } else {
             0
         };
-        
+
         for _ in 0..needed {
-            if let Some(worker_id) = self.spawn_new_worker() {
+            if let Some(worker_id) = self.spawn_new_worker().await {
                 info!("Spawned additional worker {} to meet minimum requirement", worker_id);
             }
         }
     }
-    
-    /// Get all active workers and their queue names
-    pub fn get_active_workers(&self) -> Vec<(String, String)> {
-        let mut workers = Vec::new();
-        for (worker_id, _worker_info) in self.running_workers.iter() {
-            let queue_name = format!("{}-{}", self.config.sub_queue_prefix, worker_id);
-            workers.push((worker_id.clone(), queue_name));
-        }
-        workers.sort_by_key(|(worker_id, _)| worker_id.clone());
-        workers
-    }
-    
+
     /// Get worker IDs as a list
     pub fn get_worker_ids(&self) -> Vec<String> {
         self.running_workers.keys().cloned().collect()
     }
 }
-

@@ -1,6 +1,7 @@
+use configparser::ini::Ini;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use configparser::ini::Ini;
 
 // Configuration structure
 #[derive(Debug, Clone)]
@@ -8,7 +9,6 @@ pub struct DispatcherConfig {
     pub base_path: String,
     pub worker_base_path: String,
     pub main_queue_name: String,
-    pub sub_queue_prefix: String,
     pub min_workers: u32,
     pub sleep_empty_sec: f64,
     pub worker_module: String,
@@ -17,6 +17,7 @@ pub struct DispatcherConfig {
     pub worker_pids_dir: String,
     pub worker_virtual_env: Option<String>,
     pub default_path: String,
+    pub worker_unavailable_duration_sec: u32,
 }
 
 impl Default for DispatcherConfig {
@@ -25,15 +26,15 @@ impl Default for DispatcherConfig {
             base_path: "./data/queue-main".to_string(),
             worker_base_path: "./data/queue-workers".to_string(),
             main_queue_name: "individuals-flow".to_string(),
-            sub_queue_prefix: "individuals-flow-shard".to_string(),
             min_workers: 4,
             sleep_empty_sec: 0.5,
-            worker_module: "python3 -m src.queue_worker".to_string(),
-            worker_args_template: "--base {worker_base_path} --sub {sub_queue_name} --src queue-shard-distributor --sleep-empty {sleep_empty_sec}".to_string(),
+            worker_module: "python3 -m src.nng_worker".to_string(),
+            worker_args_template: "--address {nng_address} --worker-name {worker_name} --src queue-shard-distributor".to_string(),
             worker_log_dir: "./logs/workers".to_string(),
             worker_pids_dir: "./data/worker_pids".to_string(),
             worker_virtual_env: None,
             default_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+            worker_unavailable_duration_sec: 30,
         }
     }
 }
@@ -49,7 +50,6 @@ pub fn write_default_config_to_ini(ini_path: &str, config: &DispatcherConfig) ->
 
     // Set worker configuration values
     ini.set("worker", "worker_base_path", Some(config.worker_base_path.clone()));
-    ini.set("worker", "sub_queue_prefix", Some(config.sub_queue_prefix.clone()));
     ini.set("worker", "sleep_empty_sec", Some(config.sleep_empty_sec.to_string()));
     ini.set("worker", "worker_module", Some(config.worker_module.clone()));
     ini.set("worker", "worker_args_template", Some(config.worker_args_template.clone()));
@@ -73,7 +73,7 @@ pub fn write_default_config_to_ini(ini_path: &str, config: &DispatcherConfig) ->
             info!("Created default configuration file: {}", ini_path);
             Ok(())
         },
-        Err(e) => Err(format!("Failed to write config file {}: {}", ini_path, e))
+        Err(e) => Err(format!("Failed to write config file {}: {}", ini_path, e)),
     }
 }
 
@@ -117,10 +117,6 @@ pub fn read_config_from_ini(ini_path: &str) -> DispatcherConfig {
                 info!("Config: worker_base_path = {}", config.worker_base_path);
             }
 
-            if let Some(sub_queue_prefix) = ini.get("worker", "sub_queue_prefix") {
-                config.sub_queue_prefix = sub_queue_prefix;
-                info!("Config: sub_queue_prefix = {}", config.sub_queue_prefix);
-            }
 
             if let Some(sleep_empty_sec) = ini.get("worker", "sleep_empty_sec").and_then(|s| s.parse::<f64>().ok()) {
                 config.sleep_empty_sec = sleep_empty_sec;
@@ -166,14 +162,13 @@ pub fn read_config_from_ini(ini_path: &str) -> DispatcherConfig {
 }
 
 // Function to substitute variables in template string
-pub fn substitute_template(template: &str, worker_base_path: &str, sub_queue_name: &str, sleep_empty_sec: f64) -> String {
+pub fn substitute_template(template: &str, substitutions: &HashMap<&str, String>) -> String {
     let mut result = template.to_string();
 
-    // Replace variables with actual values
-    result = result.replace("{worker_base_path}", worker_base_path);
-    result = result.replace("{sub_queue_name}", sub_queue_name);
-    result = result.replace("{sleep_empty_sec}", &sleep_empty_sec.to_string());
-    result = result.replace("{src}", "queue-shard-distributor");
+    for (key, value) in substitutions {
+        let placeholder = format!("{{{}}}", key);
+        result = result.replace(&placeholder, value);
+    }
 
     result
 }

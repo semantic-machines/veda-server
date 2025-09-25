@@ -38,9 +38,6 @@ min_workers = 4
 # Base path for worker sub-queues and service files
 worker_base_path = ./data/queue-workers
 
-# Prefix for sub-queue names (will be appended with -0, -1, -2, etc.)
-sub_queue_prefix = individuals-flow-shard
-
 # Sleep time in seconds when a worker queue is empty
 sleep_empty_sec = 0.5
 
