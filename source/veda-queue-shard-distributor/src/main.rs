@@ -69,11 +69,9 @@ impl VedaQueueModule for QueueShardDistributor {
             return Ok(false);
         }
 
-        // Use tokio runtime handle to execute async operations in sync context
-        let rt = tokio::runtime::Handle::current();
-
-        // Block on async operations
-        let result = rt.block_on(async {
+        // Use block_in_place to run async code in sync context without nested runtime
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
             // Infinite retry loop - keep trying until message is sent successfully
             loop {
                 // Wait for available worker (infinite loop until we find one)
@@ -121,6 +119,7 @@ impl VedaQueueModule for QueueShardDistributor {
                     },
                 }
             }
+            })
         });
 
         match result {
@@ -145,16 +144,16 @@ impl VedaQueueModule for QueueShardDistributor {
     }
 
     fn heartbeat(&mut self) -> Result<(), PrepareError> {
-        // Use tokio runtime handle for async operations
-        let rt = tokio::runtime::Handle::current();
-
-        rt.block_on(async {
-            // Clean up dead workers and ensure minimum workers are running during heartbeat
-            {
-                let mut manager = self.worker_manager.lock().await;
-                manager.cleanup_dead_workers();
-                manager.ensure_minimum_workers().await;
-            }
+        // Use block_in_place to run async code in sync context without nested runtime
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                // Clean up dead workers and ensure minimum workers are running during heartbeat
+                {
+                    let mut manager = self.worker_manager.lock().await;
+                    manager.cleanup_dead_workers();
+                    manager.ensure_minimum_workers().await;
+                }
+            })
         });
 
         info!("Heartbeat completed - worker management updated");
@@ -164,17 +163,17 @@ impl VedaQueueModule for QueueShardDistributor {
     fn before_start(&mut self) {
         info!("NNG Queue Shard Distributor starting with config: {:?}", self.config);
 
-        // Use tokio runtime handle for async operations
-        let rt = tokio::runtime::Handle::current();
+        // Use block_in_place to run async code in sync context without nested runtime
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                // Ensure minimum workers at startup (this creates workers first)
+                {
+                    let mut manager = self.worker_manager.lock().await;
+                    manager.ensure_minimum_workers().await;
+                }
 
-        rt.block_on(async {
-            // Ensure minimum workers at startup (this creates workers first)
-            {
-                let mut manager = self.worker_manager.lock().await;
-                manager.ensure_minimum_workers().await;
-            }
-
-            info!("Started {} NNG workers", self.config.min_workers);
+                info!("Started {} NNG workers", self.config.min_workers);
+            })
         });
 
         /*
@@ -192,20 +191,26 @@ impl VedaQueueModule for QueueShardDistributor {
 fn main() -> std::io::Result<()> {
     init_module_log!("QUEUE_SHARD_DISTRIBUTOR");
 
-    // Load configuration from INI file
-    let config = read_config_from_ini("./config/veda-queue-shard-distributor.ini");
-    info!("Starting Queue Shard Distributor with config: {:?}", config);
+    // Create Tokio runtime for async operations
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
-    let mut dispatcher = match QueueShardDistributor::new(config) {
-        Ok(d) => d,
-        Err(e) => {
-            error!("Failed to create dispatcher: {}", e);
-            return Ok(());
-        },
-    };
+    // Run everything inside the runtime context
+    rt.block_on(async {
+        // Load configuration from INI file
+        let config = read_config_from_ini("./config/veda-queue-shard-distributor.ini");
+        info!("Starting Queue Shard Distributor with config: {:?}", config);
 
-    let mut module = Module::new_with_name("queue-shard-distributor");
-    module.prepare_queue(&mut dispatcher);
+        let mut dispatcher = match QueueShardDistributor::new(config) {
+            Ok(d) => d,
+            Err(e) => {
+                error!("Failed to create dispatcher: {}", e);
+                return;
+            },
+        };
+
+        let mut module = Module::new_with_name("queue-shard-distributor");
+        module.prepare_queue(&mut dispatcher);
+    });
 
     Ok(())
 }
