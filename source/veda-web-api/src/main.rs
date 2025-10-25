@@ -53,7 +53,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use url::Url;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::module_impl::{init_log_with_params, Module};
 use v_common::search::clickhouse_client::CHClient;
@@ -61,6 +60,7 @@ use v_common::search::common::PrefixesCache;
 use v_common::search::ft_client::FTClient;
 use v_common::search::sparql_client::SparqlClient;
 use v_common::v_api::api_client::{AuthClient, MStorageClient};
+use v_common::v_authorization_impl::LmdbAzContext;
 use version::version;
 
 #[head("/")]
@@ -154,6 +154,9 @@ async fn main() -> std::io::Result<()> {
     });
 
     info!("LISTEN {port}");
+
+    // Each worker will create its own LmdbAzContext to avoid blocking
+    // LMDB supports multiple readers from different threads
 
     let port_for_bind = port.clone();
     let mut server_future = HttpServer::new(move || {

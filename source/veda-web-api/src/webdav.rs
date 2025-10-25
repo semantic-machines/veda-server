@@ -18,10 +18,10 @@ use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use mime::Mime;
 use std::sync::Arc;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::MStorageClient;
 use v_common::v_api::common_type::ResultCode;
+use v_common::v_authorization_impl::LmdbAzContext;
 use xml::escape::escape_str_pcdata;
 
 pub(crate) async fn handle_webdav_put(

@@ -13,7 +13,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use async_std::fs as async_fs;
 use async_std::io;
 use async_std::path::Path;
-use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use filetime::FileTime;
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
@@ -23,11 +23,11 @@ use std::io::{ErrorKind, Read};
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
 use v_common::v_api::common_type::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext};
+use v_common::v_authorization_impl::LmdbAzContext;
 use v_individual_model::onto::datatype::Lang;
 use v_individual_model::onto::individual::Individual;
 
@@ -71,7 +71,7 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
     let lock_id = file_info.get_first_literal("v-s:lockId");
     let locked_by = file_info.get_first_literal("v-s:lockedBy");
     let locked_date = if let Some(d) = file_info.get_first_datetime("v-s:lockedDateTo") {
-        Some(DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(d, 0).ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid timestamp"))?, Utc))
+        Some(DateTime::from_timestamp(d, 0).ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid timestamp"))?)
     } else {
         None
     };
@@ -99,11 +99,8 @@ pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az
     let file_ext = file_path.extension().unwrap_or_default().to_str().unwrap();
     let file_mime = actix_files::file_extension_to_mime(file_ext);
 
-    let last_modified = DateTime::<Utc>::from_utc(
-        NaiveDateTime::from_timestamp_opt(FileTime::from_last_modification_time(&metadata).unix_seconds(), 0)
-            .ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid timestamp"))?,
-        Utc,
-    );
+    let last_modified = DateTime::from_timestamp(FileTime::from_last_modification_time(&metadata).unix_seconds(), 0)
+        .ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid timestamp"))?;
     //.to_rfc2822()
     let size = file_info.get_first_integer("v-s:fileSize").unwrap_or_default() as u64;
     Ok(FileItem {
@@ -441,7 +438,7 @@ pub async fn update_lock_info(token: &str, fi: &FileItem, uinf: UserInfo, mstora
 
     let mut indv = Individual::default();
     indv.set_id(&fi.info_id);
-    indv.set_datetime("v-s:lockedDateTo", (Utc::now().naive_utc() + Duration::seconds(LOCK_TIMEOUT)).timestamp());
+    indv.set_datetime("v-s:lockedDateTo", (Utc::now() + Duration::seconds(LOCK_TIMEOUT)).timestamp());
     indv.set_uri("v-s:lockedBy", &uinf.ticket.user_uri);
     indv.set_string("v-s:lockId", token, Lang::none());
 

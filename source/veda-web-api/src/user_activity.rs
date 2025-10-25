@@ -38,7 +38,7 @@ pub async fn user_activity_manager(mut rx: Receiver<UserId>, tt_config: Option<C
             continue;
         }
 
-        let now = Utc::now().naive_utc().timestamp();
+        let now = Utc::now().timestamp();
         if let Some(activity_time) = user_activity.get_mut(&user_id) {
             let delta = now - *activity_time;
             if delta > UPDATE_USER_ACTIVITY_PERIOD {

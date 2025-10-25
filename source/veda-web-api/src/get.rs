@@ -12,11 +12,11 @@ use futures::lock::Mutex;
 use std::io;
 use std::sync::Arc;
 use std::time::Instant;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::info::ModuleInfo;
 use v_common::module::ticket::Ticket;
 use v_common::storage::async_storage::{check_user_in_group, get_individual_from_db, AStorage};
 use v_common::v_api::common_type::ResultCode;
+use v_common::v_authorization_impl::LmdbAzContext;
 use v_common::v_queue::consumer::Consumer;
 use v_common::v_queue::record::Mode;
 use v_individual_model::onto::individual::Individual;
@@ -126,7 +126,7 @@ pub(crate) async fn get_individual(
             match Consumer::new_with_mode(MAIN_QUEUE_PATH, consumer_name, MAIN_QUEUE_NAME, Mode::Read) {
                 Ok(mut queue_consumer) => {
                     if queue_consumer.get_info() {
-                        let now = Utc::now().naive_utc().timestamp();
+                        let now = Utc::now().timestamp();
 
                         let mut individual = Individual::default();
                         individual.set_id(&id);

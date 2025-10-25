@@ -22,8 +22,8 @@ use v_common::storage::async_storage::{check_user_in_group, get_individual_from_
 use v_storage::{Storage, StorageId, StorageMode};
 use v_storage::lmdb_storage::LMDBStorage;
 use v_common::v_api::common_type::ResultCode;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::v_authorization::common::{Access, AuthorizationContext, Trace};
+use v_common::v_authorization_impl::LmdbAzContext;
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::parser::parse_raw;
 
