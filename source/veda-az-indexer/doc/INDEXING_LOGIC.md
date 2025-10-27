@@ -32,6 +32,14 @@ The indexer uses prefixed keys to store different types of data:
 - `F` - Permission filters (FILTER_PREFIX)
 - `_L:` - Account login mappings
 
+### Storage Separation
+
+The indexer uses two separate LMDB storages:
+- **Main storage** (`./data/acl-indexes`) - Stores allow permissions (CanCreate, CanRead, CanUpdate, CanDelete) and memberships
+- **Deny storage** (`./data/acl-indexes-deny`) - Stores deny permissions (CantCreate, CantRead, CantUpdate, CantDelete)
+
+This separation allows for more efficient processing and lookup of different permission types.
+
 ### ACLRecord Structure
 
 Each authorization record (ACLRecord) contains the following fields:
@@ -53,7 +61,10 @@ Permission statements define what subjects (users/groups) can do with what objec
 A permission statement contains:
 - `v-s:permissionObject` - The resource(s) being protected (can be single value or array)
 - `v-s:permissionSubject` - Who gets the permission - user(s) or group(s) (can be single value or array)
-- `v-s:canCreate`, `v-s:canRead`, `v-s:canUpdate`, `v-s:canDelete` - Access rights (boolean)
+- `v-s:canCreate`, `v-s:canRead`, `v-s:canUpdate`, `v-s:canDelete` - Allow access rights (boolean)
+- `v-s:canCreate=false`, `v-s:canRead=false`, `v-s:canUpdate=false`, `v-s:canDelete=false` - Deny access rights (boolean)
+
+When a permission has `false` value for an access right, it means explicit denial (CantCreate, CantRead, etc.). These are stored in a separate deny storage.
 
 #### Example 1: Creating a New Permission
 
@@ -79,6 +90,7 @@ A permission statement contains:
 
 **Storage Result:**
 ```
+Main storage:
 Key: "Pd:document_123"
 Value: Encoded ACLRecordSet containing:
   - Record: { 
@@ -124,11 +136,79 @@ Value: Encoded ACLRecordSet containing:
 
 **Storage Result:**
 ```
+Main storage:
 Key: "Pd:document_123"
 Value: Updated ACLRecordSet with access 0x0E for d:user_alice
 ```
 
-#### Example 3: Deleting a Permission
+#### Example 3: Permission with Deny Access
+
+**Input Individual:**
+```
+{
+  "@id": "d:permission_deny_1",
+  "rdf:type": "v-s:PermissionStatement",
+  "v-s:permissionObject": "d:document_456",
+  "v-s:permissionSubject": "d:user_bob",
+  "v-s:canRead": false,
+  "v-s:canUpdate": false
+}
+```
+
+**Processing Steps:**
+1. Extract resource: `d:document_456`
+2. Extract subject: `d:user_bob`
+3. Calculate deny access mask: `CantRead | CantUpdate` = 0x60
+4. Generate index key: `P` + `d:document_456` = `Pd:document_456`
+5. Store to deny storage (not main storage)
+
+**Storage Result:**
+```
+Deny storage:
+Key: "Pd:document_456"
+Value: Encoded ACLRecordSet containing:
+  - Record: { 
+      id: "d:user_bob", 
+      access: 0x60, 
+      marker: 0, 
+      is_deleted: false,
+      level: 0,
+      counters: {}
+    }
+```
+
+#### Example 4: Mixed Allow and Deny Permissions
+
+**Input Individual:**
+```
+{
+  "@id": "d:permission_mixed_1",
+  "rdf:type": "v-s:PermissionStatement",
+  "v-s:permissionObject": "d:document_789",
+  "v-s:permissionSubject": "d:user_charlie",
+  "v-s:canRead": true,
+  "v-s:canUpdate": false
+}
+```
+
+**Processing:**
+When a permission has both allow and deny bits:
+1. Allow bits (CanRead = 0x02) are stored in main storage
+2. Deny bits (CantUpdate = 0x40) are stored in deny storage
+3. Two separate index entries are created
+
+**Storage Result:**
+```
+Main storage:
+Key: "Pd:document_789"
+Value: ACLRecordSet with CanRead for d:user_charlie
+
+Deny storage:
+Key: "Pd:document_789"
+Value: ACLRecordSet with CantUpdate for d:user_charlie
+```
+
+#### Example 5: Deleting a Permission
 
 **Processing:**
 When `v-s:deleted: true` is set, the indexer:
@@ -167,6 +247,7 @@ A membership contains:
 
 **Storage Result:**
 ```
+Main storage:
 Key: "Md:user_bob"
 Value: Encoded ACLRecordSet containing:
   - Record: { 
@@ -193,6 +274,7 @@ Value: Encoded ACLRecordSet containing:
 
 **Storage Result:**
 ```
+Main storage:
 Key: "Md:user_charlie"
 Value: Encoded ACLRecordSet containing:
   - Record: { 
@@ -245,6 +327,7 @@ A permission filter contains:
 
 **Storage Result:**
 ```
+Main storage:
 Key: "Fexpression_abcd:department_123"
 Value: Encoded ACLRecordSet containing record for d:group_managers
 ```
@@ -272,6 +355,7 @@ Account indexing creates a mapping from login to account ID for fast lookups.
 
 **Storage Result:**
 ```
+Main storage:
 Key: "_L:alice@example.com"
 Value: "d:account_alice"
 ```
@@ -282,7 +366,7 @@ Value: "d:account_alice"
 When account is deleted (empty new_state):
 1. Extract login from previous state
 2. Generate key: `_L:{login}`
-3. Remove key from storage
+3. Remove key from main storage
 
 ## Advanced Features
 
@@ -357,15 +441,42 @@ When updating a permission/membership, the indexer detects resources that were r
 
 ## ACL Cache
 
-The indexer maintains an optional cache for frequently accessed authorization data.
+The indexer maintains an optional cache for frequently accessed authorization data. The cache is only used for allow permissions stored in the main storage, not for deny permissions.
+
+### Cache Configuration
+
+The cache is configured via `veda.properties`:
+
+```ini
+[authorization_cache]
+write = true
+expiration = 30d
+cleanup_time = 02:00:00
+cleanup_batch_time_limit = 100ms
+cleanup_continue_interval = 10s
+min_identifier_count_threshold = 100
+stat_processing_time_limit = 5s
+stat_processing_interval = 10m
+```
+
+Configuration parameters:
+- `write` - Enable/disable cache (default: false)
+- `expiration` - Cache entry expiration time (default: 30 days)
+- `cleanup_time` - Daily cleanup start time (default: 02:00:00)
+- `cleanup_batch_time_limit` - Max time per cleanup batch (default: 100ms)
+- `cleanup_continue_interval` - Interval between cleanup batches (default: 10s)
+- `min_identifier_count_threshold` - Min access count to cache an entry (default: 100)
+- `stat_processing_time_limit` - Max time for processing statistics (default: 5s)
+- `stat_processing_interval` - Interval between stat processing (default: 10m)
 
 ### Cache Workflow
 
-1. **Initial Storage**: Authorization records are stored in main LMDB database
+1. **Initial Storage**: Allow permission records are stored in main LMDB database (`./data/acl-indexes`)
 2. **Usage Tracking**: Statistics files track access frequency for each identifier
-3. **Cache Population**: Records exceeding threshold are copied to cache with timestamp
-4. **Cache Expiration**: Daily cleanup removes expired entries based on timestamp
-5. **Cache Update**: When permission changes, both main storage and cache are updated
+3. **Cache Population**: Records exceeding threshold are copied to cache LMDB database (`./data/acl-cache-indexes`) with timestamp
+4. **Cache Expiration**: Daily incremental cleanup removes expired entries based on timestamp
+5. **Cache Update**: When allow permission changes, both main storage and cache are updated simultaneously
+6. **Deny Permissions**: Cache is NOT used for deny permissions - they are only stored in deny storage
 
 #### Example: Cache Entry
 
@@ -379,7 +490,7 @@ Value: <timestamp><encoded_record_set>
 
 ### Statistics Processing
 
-Statistics files (`.processed` extension) contain usage data:
+Statistics files (`.processed` extension) contain usage data in `./data/stat/` directory:
 
 **File Format:**
 ```
@@ -391,12 +502,29 @@ Statistics files (`.processed` extension) contain usage data:
 - Multiple identifiers separated by semicolon
 
 **Processing Steps:**
-1. Read `.processed` files from `./data/stat/`
-2. Parse identifier and count
-3. If count >= `min_identifier_count_threshold`
-4. Check if already in cache
-5. If not, load from main storage and add to cache with current timestamp
+1. Heartbeat function checks if enough time has passed since last processing (configurable via `stat_processing_interval`)
+2. Read `.processed` files from `./data/stat/`
+3. Parse identifier and count from each line
+4. If count >= `min_identifier_count_threshold` and not already in cache
+5. Load from main storage and add to cache with current timestamp
 6. Rename file to `.ok` when complete
+7. Processing is time-limited (configurable via `stat_processing_time_limit`) to avoid blocking
+8. State is saved to `./data/stat/process_state.info` for resumable processing
+
+### Daily Cache Cleanup
+
+The cache cleanup process runs incrementally to avoid blocking:
+
+**Cleanup Stages:**
+1. **Initiation**: Once per day at configured `cleanup_time` (default: 02:00:00)
+2. **Key Collection**: All cache keys are collected from LMDB
+3. **Incremental Processing**: Keys are processed in batches
+4. **Batch Limits**: Each batch runs for max `cleanup_batch_time_limit` (default: 100ms)
+5. **Batch Intervals**: Waits `cleanup_continue_interval` (default: 10s) between batches
+6. **Expiration Check**: Entries older than `expiration` time are removed
+7. **Completion**: Cleanup completes when all keys are processed
+
+This incremental approach ensures the indexer remains responsive while performing cleanup.
 
 ## Multi-Resource Indexing
 
@@ -416,7 +544,7 @@ Permissions can target multiple resources simultaneously.
 ```
 
 **Storage Result:**
-Three separate index entries:
+Three separate index entries in main storage:
 ```
 Key: "Pd:doc_1" -> ACLRecordSet with d:user_frank
 Key: "Pd:doc_2" -> ACLRecordSet with d:user_frank  
@@ -548,6 +676,7 @@ Here are complete examples showing what ACLRecord structures look like when coun
 
 **Storage after first permission:**
 ```
+Main storage:
 Key: "Pd:document_999"
 Value: Encoded ACLRecordSet containing:
   - Record: {
@@ -573,6 +702,7 @@ Value: Encoded ACLRecordSet containing:
 
 **Storage after second permission (counters now active!):**
 ```
+Main storage:
 Key: "Pd:document_999"
 Value: Encoded ACLRecordSet containing:
   - Record: {
@@ -588,6 +718,7 @@ Note: 'r' counter = 2 (both permissions grant CanRead), 'u' counter = 1 (only se
 
 **After deleting permission_A:**
 ```
+Main storage:
 Key: "Pd:document_999"
 Value: Encoded ACLRecordSet containing:
   - Record: {
@@ -616,6 +747,7 @@ Note: CanRead (0x02) bit still present because 'r' counter = 1 (permission_B sti
 
 **Storage after first membership:**
 ```
+Main storage:
 Key: "Md:user_sara"
 Value: Encoded ACLRecordSet containing:
   - Record: {
@@ -639,6 +771,7 @@ Value: Encoded ACLRecordSet containing:
 
 **Storage after second membership (counters filled!):**
 ```
+Main storage:
 Key: "Md:user_sara"
 Value: Encoded ACLRecordSet containing:
   - Record: {
@@ -656,6 +789,7 @@ Note: All four permission bits have counter = 2 (both memberships grant full acc
 
 **Storage with different permission combinations:**
 ```
+Main storage:
 Key: "Pd:project_alpha"
 Value: Encoded ACLRecordSet containing:
   - Record: {
@@ -714,7 +848,7 @@ Invalid or malformed individuals are logged and skipped:
 
 The indexer processes items in batches:
 - After every 100 items, processing statistics are logged
-- Heartbeat function runs cache cleanup and statistics processing
+- Heartbeat function runs cache cleanup and statistics processing with configurable intervals
 - Cleanup operations are time-limited to avoid blocking
 
 ### Index Key Design
@@ -723,14 +857,16 @@ Index keys are designed for fast lookups:
 - Prefix-based organization (P, M, F, _L)
 - Direct resource ID mapping
 - Filter expressions embedded in keys
+- Separate storages for allow and deny permissions
 
 ### Cache Strategy
 
-The cache improves performance for frequently accessed items:
+The cache improves performance for frequently accessed allow permissions:
 - Usage threshold prevents cache pollution
-- Expiration removes stale entries
-- Incremental cleanup avoids long pauses
+- Incremental expiration removes stale entries
 - Time-limited operations prevent blocking
+- Only allow permissions are cached (deny permissions are not cached)
+- Simultaneous updates to both main storage and cache maintain consistency
 
 ## Queue Processing
 
@@ -746,10 +882,14 @@ Queue messages contain:
 
 1. Read message from `individuals-flow` queue
 2. Decode `prev_state` and `new_state`
-3. Check `rdf:type` to determine handler
-4. Call appropriate indexing function
-5. Update module_info with op_id
-6. Acknowledge message
+3. Check `rdf:type` to determine handler:
+   - `v-s:PermissionStatement` → `prepare_permission_statement()`
+     - Splits into allow permissions (main storage) and deny permissions (deny storage)
+   - `v-s:Membership` → `prepare_membership()` (uses main storage)
+   - `v-s:PermissionFilter` → `prepare_permission_filter()` (uses main storage)
+   - `v-s:Account` → `prepare_account()` (uses main storage)
+4. Update module_info with op_id
+5. Acknowledge message
 
 ## System Account Bootstrap
 

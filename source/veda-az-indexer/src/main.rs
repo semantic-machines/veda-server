@@ -57,6 +57,7 @@ fn main() -> Result<(), i32> {
         permission_statement_counter: 0,
         membership_counter: 0,
         storage: Box::new(LmdbInstance::new("./data/acl-indexes", StorageMode::ReadWrite)),
+        deny_storage: Box::new(LmdbInstance::new("./data/acl-indexes-deny", StorageMode::ReadWrite)),
         version_of_index_format: 2,
         module_info: module_info.unwrap(),
         acl_cache: ACLCache::new(&config),
@@ -176,11 +177,12 @@ fn prepare_membership(prev_state: &mut Individual, new_state: &mut Individual, c
         MEMBERSHIP_PREFIX,
         Access::CanCreate as u8 | Access::CanRead as u8 | Access::CanUpdate as u8 | Access::CanDelete as u8,
         ctx,
+        false, // memberships use main storage (not deny)
     )
 }
 
 fn prepare_permission_filter(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) -> Result<(), StorageError> {
-    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx)
+    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx, false) // filters use main storage (not deny)
 }
 
 fn prepare_account(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {

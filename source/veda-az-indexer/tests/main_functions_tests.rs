@@ -164,7 +164,8 @@ fn test_membership_with_multiple_resources() {
         "v-s:memberOf",
         MEMBERSHIP_PREFIX,
         Access::CanRead as u8,
-        &mut ctx
+        &mut ctx,
+        false,
     );
     assert!(result.is_ok());
     
@@ -250,7 +251,8 @@ fn test_use_filter_field() {
         "v-s:memberOf",
         MEMBERSHIP_PREFIX,
         Access::CanRead as u8,
-        &mut ctx
+        &mut ctx,
+        false,
     );
     assert!(result.is_ok());
     
@@ -332,7 +334,8 @@ fn test_empty_access_uses_default() {
         "v-s:memberOf",
         MEMBERSHIP_PREFIX,
         default_access,
-        &mut ctx
+        &mut ctx,
+        false,
     );
     assert!(result.is_ok());
     

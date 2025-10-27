@@ -61,6 +61,7 @@ pub struct Context {
     pub permission_statement_counter: u32,
     pub membership_counter: u32,
     pub storage: Box<dyn Storage>,
+    pub deny_storage: Box<dyn Storage>,
     pub version_of_index_format: u8,
     pub module_info: ModuleInfo,
     pub acl_cache: Option<ACLCache>,
@@ -105,6 +106,16 @@ pub fn get_access_from_individual(state: &mut Individual) -> u8 {
     access
 }
 
+// Helper function to check if access has deny bits
+pub fn has_deny_access(access: u8) -> bool {
+    (access & (Access::CantCreate as u8 | Access::CantRead as u8 | Access::CantUpdate as u8 | Access::CantDelete as u8)) != 0
+}
+
+// Helper function to check if access has allow bits
+pub fn has_allow_access(access: u8) -> bool {
+    (access & (Access::CanCreate as u8 | Access::CanRead as u8 | Access::CanUpdate as u8 | Access::CanDelete as u8)) != 0
+}
+
 // Function for indexing access right sets
 // - Extracts information about resources, groups, and access rights from the previous and new object states.
 // - Determines if the object is deleted, restored, or updated.
@@ -118,6 +129,7 @@ pub fn index_right_sets(
     prefix: &str,
     default_access: u8,
     ctx: &mut Context,
+    use_deny_storage: bool,
 ) -> Result<(), StorageError> {
     let mut is_drop_count = false;
 
@@ -191,7 +203,7 @@ pub fn index_right_sets(
             cache: &mut cache,
             mode: &CacheType::None,
         };
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut cache_ctx)?;
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, n_is_del, ctx, &mut cache_ctx, use_deny_storage)?;
     } else if !n_is_del && p_is_del {
         // Object is restored
         let mut cache = HashMap::new();
@@ -199,7 +211,7 @@ pub fn index_right_sets(
             cache: &mut cache,
             mode: &CacheType::Read,
         };
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache_ctx)?;
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache_ctx, use_deny_storage)?;
     } else if !n_is_del && !p_is_del {
         // Object is updated
         let mut cache = HashMap::new();
@@ -216,12 +228,12 @@ pub fn index_right_sets(
 
             // Temporarily change cache mode to None for deletion
             cache_ctx.mode = &CacheType::None;
-            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache_ctx)?;
+            add_or_del_right_sets(id, &prev_data, &empty_data, &aux_data, true, ctx, &mut cache_ctx, use_deny_storage)?;
             // Restore cache mode to Read
             cache_ctx.mode = &CacheType::Read;
         }
 
-        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache_ctx)?;
+        add_or_del_right_sets(id, &new_data, &prev_data, &aux_data, false, ctx, &mut cache_ctx, use_deny_storage)?;
     }
 
     Ok(())
@@ -256,6 +268,7 @@ fn add_or_del_right_sets(
     is_deleted: bool,
     ctx: &mut Context,
     cache_ctx: &mut CacheContext,
+    use_deny_storage: bool,
 ) -> Result<(), StorageError> {
     // Get the resources and groups that have been removed
     let removed_resource = get_disappeared(prev_data.resource, new_data.resource);
@@ -274,14 +287,14 @@ fn add_or_del_right_sets(
             is_deleted,
             prev_access: prev_data.access,
         };
-        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx)?;
+        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx, use_deny_storage)?;
     } else {
         // Update the access right set with the new data
         let proc_ctx = ProcessingContext {
             is_deleted,
             prev_access: prev_data.access,
         };
-        update_right_set(id, new_data, proc_ctx, aux_data, ctx, cache_ctx)?;
+        update_right_set(id, new_data, proc_ctx, aux_data, ctx, cache_ctx, use_deny_storage)?;
     }
 
     if !removed_resource.is_empty() {
@@ -295,7 +308,7 @@ fn add_or_del_right_sets(
             is_deleted: true,
             prev_access: prev_data.access,
         };
-        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx)?;
+        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx, use_deny_storage)?;
     }
 
     if !removed_in_set.is_empty() {
@@ -309,7 +322,7 @@ fn add_or_del_right_sets(
             is_deleted: true,
             prev_access: prev_data.access,
         };
-        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx)?;
+        update_right_set(id, &t_data, proc_ctx, aux_data, ctx, cache_ctx, use_deny_storage)?;
     }
 
     Ok(())
@@ -327,7 +340,15 @@ fn update_right_set(
     aux_data: &AuxData,
     ctx: &mut Context,
     cache_ctx: &mut CacheContext,
+    use_deny_storage: bool,
 ) -> Result<(), StorageError> {
+    // Select the appropriate storage
+    let storage = if use_deny_storage {
+        &mut ctx.deny_storage
+    } else {
+        &mut ctx.storage
+    };
+    
     for rs in new_data.resource.iter() {
         // Generate the key based on the prefix, filter, and resource identifier
         let key = aux_data.prefix.to_owned() + aux_data.use_filter + rs;
@@ -343,7 +364,7 @@ fn update_right_set(
         if let Some(prev_data_str) = cache_ctx.cache.get(&key) {
             debug!("PRE(MEM): {} {} {:?}", source_id, rs, prev_data_str);
             decode_rec_to_rightset(prev_data_str, &mut new_right_set);
-        } else if let Some(prev_data_str) = ctx.storage.get(&key) {
+        } else if let Some(prev_data_str) = storage.get(&key) {
             debug!("PRE(STORAGE): {} {} {:?}", source_id, rs, prev_data_str);
             decode_rec_to_rightset(&prev_data_str, &mut new_right_set);
         }
@@ -390,22 +411,25 @@ fn update_right_set(
         } else {
             debug!("NEW(STORAGE): {} {} {:?}", source_id, rs, new_record);
             
-            if !ctx.storage.put(&key, &new_record) {
+            if !storage.put(&key, &new_record) {
                 return Err(StorageError::StoragePutError {
                     key: key.clone(),
                     source: "storage".to_string(),
                 });
             }
 
-            if let Some(c) = &mut ctx.acl_cache {
-                let new_record = encode_record(Some(Utc::now()), &new_right_set, ctx.version_of_index_format);
-                debug!("NEW(CACHE): {} {} {:?}", source_id, rs, new_record);
-                
-                if !c.instance.put(&key, new_record) {
-                    return Err(StorageError::StoragePutError {
-                        key: key.clone(),
-                        source: "acl_cache".to_string(),
-                    });
+            // Update ACL cache only for allow permissions (not for deny)
+            if !use_deny_storage {
+                if let Some(c) = &mut ctx.acl_cache {
+                    let new_record = encode_record(Some(Utc::now()), &new_right_set, ctx.version_of_index_format);
+                    debug!("NEW(CACHE): {} {} {:?}", source_id, rs, new_record);
+                    
+                    if !c.instance.put(&key, new_record) {
+                        return Err(StorageError::StoragePutError {
+                            key: key.clone(),
+                            source: "acl_cache".to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -438,5 +462,18 @@ pub fn get_disappeared(a: &[String], b: &[String]) -> Vec<String> {
 }
 
 pub fn prepare_permission_statement(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) -> Result<(), StorageError> {
-    index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx)
+    let new_access = get_access_from_individual(new_state);
+    let prev_access = get_access_from_individual(prev_state);
+    
+    // Index deny permissions into separate deny_storage
+    if has_deny_access(new_access) || has_deny_access(prev_access) {
+        index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx, true)?;
+    }
+    
+    // Index allow permissions into main storage
+    if has_allow_access(new_access) || has_allow_access(prev_access) {
+        index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:permissionSubject", PERMISSION_PREFIX, 0, ctx, false)?;
+    }
+    
+    Ok(())
 }

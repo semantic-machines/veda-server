@@ -66,7 +66,8 @@ fn test_membership_database_write() {
         "v-s:memberOf",
         MEMBERSHIP_PREFIX,
         Access::CanCreate as u8 | Access::CanRead as u8 | Access::CanUpdate as u8 | Access::CanDelete as u8,
-        &mut ctx
+        &mut ctx,
+        false,
     );
     assert!(result.is_ok());
     
@@ -110,7 +111,8 @@ fn test_permission_filter_database_write() {
         "v-s:resource",
         FILTER_PREFIX,
         Access::CanRead as u8,
-        &mut ctx
+        &mut ctx,
+        false,
     );
     assert!(result.is_ok());
     
@@ -311,7 +313,8 @@ fn test_database_key_format_verification() {
         "v-s:memberOf",
         MEMBERSHIP_PREFIX,
         Access::CanRead as u8,
-        &mut ctx
+        &mut ctx,
+        false,
     );
     
     // Verify membership key format: MEMBERSHIP_PREFIX + resource
@@ -344,7 +347,8 @@ fn test_database_key_format_verification() {
         "v-s:resource",
         FILTER_PREFIX,
         Access::CanRead as u8,
-        &mut ctx
+        &mut ctx,
+        false,
     );
     
     // Verify filter key format: FILTER_PREFIX + object

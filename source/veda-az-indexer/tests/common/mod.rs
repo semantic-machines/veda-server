@@ -31,12 +31,14 @@ impl Storage for TestStorage {
 pub fn create_test_context() -> Context {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().join("test_storage");
+    let deny_storage_path = temp_dir.path().join("test_deny_storage");
     let module_info_path = temp_dir.path().join("test_module_info");
     
     Context {
         permission_statement_counter: 0,
         membership_counter: 0,
         storage: Box::new(TestStorage::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite)),
+        deny_storage: Box::new(TestStorage::new(deny_storage_path.to_str().unwrap(), StorageMode::ReadWrite)),
         version_of_index_format: 2,
         module_info: ModuleInfo::new(module_info_path.to_str().unwrap(), "test_module", true).unwrap(),
         acl_cache: None,

@@ -299,3 +299,172 @@ fn test_version_of_index_format() {
     assert!(ctx.storage.get(&key1).is_some());
     assert!(ctx.storage.get(&key2).is_some());
 }
+
+#[test]
+fn test_deny_permissions_separate_storage() {
+    let mut ctx = create_test_context();
+    
+    // Create permission with only deny bits (Cant*)
+    let mut prev_state = Individual::default();
+    let mut new_state = create_test_individual("test:deny_perm1", "v-s:PermissionStatement");
+    new_state.add_uri("v-s:permissionObject", "test:deny_resource1");
+    new_state.add_uri("v-s:permissionSubject", "test:deny_subject1");
+    new_state.add_bool("v-s:canCreate", false);
+    new_state.add_bool("v-s:canDelete", false);
+    
+    let result = prepare_permission_statement(&mut prev_state, &mut new_state, &mut ctx);
+    assert!(result.is_ok());
+    
+    // Check that deny permissions went to deny_storage
+    let deny_key = format!("{PERMISSION_PREFIX}test:deny_resource1");
+    let deny_value = ctx.deny_storage.get(&deny_key);
+    assert!(deny_value.is_some(), "Deny permissions should be in deny_storage");
+    
+    // Verify the deny bits
+    let deny_data = deny_value.unwrap();
+    let mut deny_record_set = ACLRecordSet::new();
+    decode_rec_to_rightset(&deny_data, &mut deny_record_set);
+    
+    let deny_acl = deny_record_set.get("test:deny_subject1").unwrap();
+    assert!((deny_acl.access & Access::CantCreate as u8) != 0, "Should have CantCreate flag");
+    assert!((deny_acl.access & Access::CantDelete as u8) != 0, "Should have CantDelete flag");
+}
+
+#[test]
+fn test_allow_permissions_separate_storage() {
+    let mut ctx = create_test_context();
+    
+    // Create permission with only allow bits (Can*)
+    let mut prev_state = Individual::default();
+    let mut new_state = create_test_individual("test:allow_perm1", "v-s:PermissionStatement");
+    new_state.add_uri("v-s:permissionObject", "test:allow_resource1");
+    new_state.add_uri("v-s:permissionSubject", "test:allow_subject1");
+    new_state.add_bool("v-s:canRead", true);
+    new_state.add_bool("v-s:canUpdate", true);
+    
+    let result = prepare_permission_statement(&mut prev_state, &mut new_state, &mut ctx);
+    assert!(result.is_ok());
+    
+    // Check that allow permissions went to main storage
+    let allow_key = format!("{PERMISSION_PREFIX}test:allow_resource1");
+    let allow_value = ctx.storage.get(&allow_key);
+    assert!(allow_value.is_some(), "Allow permissions should be in main storage");
+    
+    // Verify the allow bits
+    let allow_data = allow_value.unwrap();
+    let mut allow_record_set = ACLRecordSet::new();
+    decode_rec_to_rightset(&allow_data, &mut allow_record_set);
+    
+    let allow_acl = allow_record_set.get("test:allow_subject1").unwrap();
+    assert!((allow_acl.access & Access::CanRead as u8) != 0, "Should have CanRead flag");
+    assert!((allow_acl.access & Access::CanUpdate as u8) != 0, "Should have CanUpdate flag");
+    
+    // Verify deny_storage does NOT have this permission
+    let deny_value = ctx.deny_storage.get(&allow_key);
+    assert!(deny_value.is_none(), "Allow-only permissions should NOT be in deny_storage");
+}
+
+#[test]
+fn test_mixed_permissions_both_storages() {
+    let mut ctx = create_test_context();
+    
+    // Create permission with both allow and deny bits
+    let mut prev_state = Individual::default();
+    let mut new_state = create_test_individual("test:mixed_perm1", "v-s:PermissionStatement");
+    new_state.add_uri("v-s:permissionObject", "test:mixed_resource1");
+    new_state.add_uri("v-s:permissionSubject", "test:mixed_subject1");
+    new_state.add_bool("v-s:canRead", true);      // Allow
+    new_state.add_bool("v-s:canUpdate", false);   // Deny
+    new_state.add_bool("v-s:canDelete", false);   // Deny
+    
+    let result = prepare_permission_statement(&mut prev_state, &mut new_state, &mut ctx);
+    assert!(result.is_ok());
+    
+    let key = format!("{PERMISSION_PREFIX}test:mixed_resource1");
+    
+    // Check allow storage has the allow bits
+    let allow_value = ctx.storage.get(&key);
+    assert!(allow_value.is_some(), "Allow bits should be in main storage");
+    
+    let allow_data = allow_value.unwrap();
+    let mut allow_record_set = ACLRecordSet::new();
+    decode_rec_to_rightset(&allow_data, &mut allow_record_set);
+    
+    let allow_acl = allow_record_set.get("test:mixed_subject1").unwrap();
+    assert!((allow_acl.access & Access::CanRead as u8) != 0, "Should have CanRead flag");
+    
+    // Check deny storage has the deny bits
+    let deny_value = ctx.deny_storage.get(&key);
+    assert!(deny_value.is_some(), "Deny bits should be in deny_storage");
+    
+    let deny_data = deny_value.unwrap();
+    let mut deny_record_set = ACLRecordSet::new();
+    decode_rec_to_rightset(&deny_data, &mut deny_record_set);
+    
+    let deny_acl = deny_record_set.get("test:mixed_subject1").unwrap();
+    assert!((deny_acl.access & Access::CantUpdate as u8) != 0, "Should have CantUpdate flag");
+    assert!((deny_acl.access & Access::CantDelete as u8) != 0, "Should have CantDelete flag");
+}
+
+#[test]
+fn test_deny_permission_update() {
+    let mut ctx = create_test_context();
+    
+    // Create initial deny permission
+    let mut prev_state = Individual::default();
+    let mut new_state = create_test_individual("test:deny_perm2", "v-s:PermissionStatement");
+    new_state.add_uri("v-s:permissionObject", "test:deny_resource2");
+    new_state.add_uri("v-s:permissionSubject", "test:deny_subject2");
+    new_state.add_bool("v-s:canCreate", false);
+    
+    let result = prepare_permission_statement(&mut prev_state, &mut new_state, &mut ctx);
+    assert!(result.is_ok());
+    
+    // Update: add more deny bits
+    let mut prev_state2 = create_test_individual("test:deny_perm2", "v-s:PermissionStatement");
+    prev_state2.add_uri("v-s:permissionObject", "test:deny_resource2");
+    prev_state2.add_uri("v-s:permissionSubject", "test:deny_subject2");
+    prev_state2.add_bool("v-s:canCreate", false);
+    
+    let mut new_state2 = create_test_individual("test:deny_perm2", "v-s:PermissionStatement");
+    new_state2.add_uri("v-s:permissionObject", "test:deny_resource2");
+    new_state2.add_uri("v-s:permissionSubject", "test:deny_subject2");
+    new_state2.add_bool("v-s:canCreate", false);
+    new_state2.add_bool("v-s:canDelete", false);
+    
+    let result2 = prepare_permission_statement(&mut prev_state2, &mut new_state2, &mut ctx);
+    assert!(result2.is_ok());
+    
+    // Verify both deny bits are now in deny_storage
+    let deny_key = format!("{PERMISSION_PREFIX}test:deny_resource2");
+    let deny_value = ctx.deny_storage.get(&deny_key);
+    assert!(deny_value.is_some());
+    
+    let deny_data = deny_value.unwrap();
+    let mut deny_record_set = ACLRecordSet::new();
+    decode_rec_to_rightset(&deny_data, &mut deny_record_set);
+    
+    let deny_acl = deny_record_set.get("test:deny_subject2").unwrap();
+    assert!((deny_acl.access & Access::CantCreate as u8) != 0, "Should have CantCreate flag");
+    assert!((deny_acl.access & Access::CantDelete as u8) != 0, "Should have CantDelete flag");
+}
+
+#[test]
+fn test_helper_functions() {
+    // Test has_deny_access
+    let deny_access = Access::CantRead as u8 | Access::CantUpdate as u8;
+    assert!(has_deny_access(deny_access), "Should detect deny access");
+    
+    let allow_access = Access::CanRead as u8 | Access::CanUpdate as u8;
+    assert!(!has_deny_access(allow_access), "Should not detect deny in allow access");
+    
+    // Test has_allow_access
+    assert!(has_allow_access(allow_access), "Should detect allow access");
+    assert!(!has_allow_access(deny_access), "Should not detect allow in deny access");
+    
+    // Test mixed access
+    let mixed_access = Access::CanRead as u8 | Access::CantCreate as u8;
+    assert!(has_deny_access(mixed_access), "Should detect deny in mixed access");
+    assert!(has_allow_access(mixed_access), "Should detect allow in mixed access");
+}
+
