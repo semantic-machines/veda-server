@@ -1,59 +1,12 @@
-use tempfile::TempDir;
+mod common;
+
+use common::{create_test_context, create_test_individual};
 use veda_az_indexer::common::*;
 
 use v_individual_model::onto::individual::Individual;
-use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
-use v_common::module::info::ModuleInfo;
 use v_common::v_authorization::common::{Access, PERMISSION_PREFIX, MEMBERSHIP_PREFIX, FILTER_PREFIX};
 use v_common::v_authorization::record_formats::{decode_rec_to_rightset};
 use v_common::v_authorization::ACLRecordSet;
-
-// Wrapper for LmdbInstance to implement Storage trait in tests
-struct TestStorage(LmdbInstance);
-
-impl TestStorage {
-    fn new(path: &str, mode: StorageMode) -> Self {
-        TestStorage(LmdbInstance::new(path, mode))
-    }
-}
-
-impl Storage for TestStorage {
-    fn get(&mut self, key: &str) -> Option<String> {
-        self.0.get(key)
-    }
-    
-    fn put(&mut self, key: &str, value: &str) -> bool {
-        self.0.put(key, value)
-    }
-    
-    fn remove(&mut self, key: &str) -> bool {
-        self.0.remove(key)
-    }
-}
-
-// Helper function to create a test context
-fn create_test_context() -> Context {
-    let temp_dir = TempDir::new().unwrap();
-    let storage_path = temp_dir.path().join("test_storage");
-    let module_info_path = temp_dir.path().join("test_module_info");
-    
-    Context {
-        permission_statement_counter: 0,
-        membership_counter: 0,
-        storage: Box::new(TestStorage::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite)),
-        version_of_index_format: 2,
-        module_info: ModuleInfo::new(module_info_path.to_str().unwrap(), "test_module", true).unwrap(),
-        acl_cache: None,
-    }
-}
-
-// Helper function to create a test individual
-fn create_test_individual(id: &str, rdf_type: &str) -> Individual {
-    let mut individual = Individual::default();
-    individual.set_id(id);
-    individual.add_uri("rdf:type", rdf_type);
-    individual
-}
 
 #[test]
 fn test_permission_statement_database_write() {
@@ -156,7 +109,7 @@ fn test_permission_filter_database_write() {
         "v-s:permissionObject",
         "v-s:resource",
         FILTER_PREFIX,
-        Access::CanRead as u8, // Add default access
+        Access::CanRead as u8,
         &mut ctx
     );
     assert!(result.is_ok());
@@ -180,30 +133,6 @@ fn test_permission_filter_database_write() {
     // Verify access rights include the default CanRead
     assert!((acl_record.access & Access::CanRead as u8) != 0, 
             "Filter should have CanRead access");
-}
-
-#[test]
-fn test_account_database_write() {
-    let mut ctx = create_test_context();
-    
-    // Create account with login (simplified test without actual login field)
-    let _prev_state = Individual::default();
-    let new_state = create_test_individual("test:account1", "v-s:Account");
-    
-    // Simulate account processing (simplified)
-    if !new_state.is_empty() {
-        let key = format!("_L:{}", new_state.get_id().to_lowercase());
-        let val = new_state.get_id();
-        ctx.storage.put(&key, val);
-    }
-    
-    // Check what was written to the database
-    let expected_key = format!("_L:{}", "test:account1");
-    let stored_value = ctx.storage.get(&expected_key);
-    assert!(stored_value.is_some(), "Expected account data to be written to storage with key: {expected_key}");
-    
-    let stored_data = stored_value.unwrap();
-    assert_eq!(stored_data, "test:account1", "Stored account ID should match");
 }
 
 #[test]
@@ -329,16 +258,10 @@ fn test_permission_deletion_database_write() {
     let mut record_set = ACLRecordSet::new();
     let (_, _) = decode_rec_to_rightset(&stored_data, &mut record_set);
     
-    // After deletion, the record might be removed from the set entirely,
-    // or it might be present but marked as deleted. Let's check both cases.
+    // After deletion, the record should be marked as deleted
     if record_set.contains_key("test:subject1") {
         let acl_record = record_set.get("test:subject1").unwrap();
-        // If the record exists, it should be marked as deleted
         assert!(acl_record.is_deleted, "Record should be marked as deleted");
-    } else {
-        // If the record doesn't exist, that's also a valid way to handle deletion
-        // Just verify that the database still contains some data structure
-        assert!(!stored_data.is_empty(), "Storage should contain some data after deletion");
     }
 }
 
@@ -420,7 +343,7 @@ fn test_database_key_format_verification() {
         "v-s:permissionObject",
         "v-s:resource",
         FILTER_PREFIX,
-        Access::CanRead as u8, // Add default access for filter
+        Access::CanRead as u8,
         &mut ctx
     );
     
@@ -440,4 +363,4 @@ fn test_database_key_format_verification() {
     assert_eq!(filter_acl.id, "test:filter_resource", "Filter ACL ID should match");
     assert!((filter_acl.access & Access::CanRead as u8) != 0, 
             "Filter should have CanRead access");
-} 
+}

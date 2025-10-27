@@ -1,59 +1,10 @@
-use tempfile::TempDir;
+mod common;
+use common::{create_test_context, create_test_individual};
 
 use veda_az_indexer::common::*;
 use veda_az_indexer::acl_cache::*;
 
-use v_individual_model::onto::individual::Individual;
-use v_storage::{StorageMode, lmdb_storage::LmdbInstance};
-use v_common::module::info::ModuleInfo;
 use v_common::v_authorization::common::Access;
-
-// Wrapper for LmdbInstance to implement Storage trait in tests
-struct TestStorage(LmdbInstance);
-
-impl TestStorage {
-    fn new(path: &str, mode: StorageMode) -> Self {
-        TestStorage(LmdbInstance::new(path, mode))
-    }
-}
-
-impl Storage for TestStorage {
-    fn get(&mut self, key: &str) -> Option<String> {
-        self.0.get::<String>(key)
-    }
-    
-    fn put(&mut self, key: &str, value: &str) -> bool {
-        self.0.put(key, value)
-    }
-    
-    fn remove(&mut self, key: &str) -> bool {
-        self.0.remove(key)
-    }
-}
-
-// Helper function to create a test context
-fn create_test_context() -> Context {
-    let temp_dir = TempDir::new().unwrap();
-    let storage_path = temp_dir.path().join("test_storage");
-    let module_info_path = temp_dir.path().join("test_module_info");
-    
-    Context {
-        permission_statement_counter: 0,
-        membership_counter: 0,
-        storage: Box::new(TestStorage::new(storage_path.to_str().unwrap(), StorageMode::ReadWrite)),
-        version_of_index_format: 2,
-        module_info: ModuleInfo::new(module_info_path.to_str().unwrap(), "test_module", true).unwrap(),
-        acl_cache: None,
-    }
-}
-
-// Helper function to create a test individual
-fn create_test_individual(id: &str, rdf_type: &str) -> Individual {
-    let mut individual = Individual::default();
-    individual.set_id(id);
-    individual.add_uri("rdf:type", rdf_type);
-    individual
-}
 
 #[test]
 fn test_get_access_from_individual() {
@@ -114,10 +65,6 @@ fn test_get_disappeared() {
     let disappeared4 = get_disappeared(&a4, &b4);
     assert!(disappeared4.is_empty());
 }
-
-
-
-
 
 #[test] 
 fn test_acl_cache_new() {
@@ -222,6 +169,22 @@ fn test_individual_creation() {
     assert!(individual.any_exists("rdf:type", &["v-s:TestType"]));
 }
 
+#[test]
+fn test_get_access_no_permissions() {
+    // Test with individual that has no permission fields set
+    let mut individual = create_test_individual("test:user4", "v-s:Account");
+    
+    let access = get_access_from_individual(&mut individual);
+    assert_eq!(access, 0, "Access should be 0 when no permissions are set");
+}
 
-
- 
+#[test]
+fn test_get_access_partial_permissions() {
+    // Test with only some permissions set
+    let mut individual = create_test_individual("test:user5", "v-s:Account");
+    individual.add_bool("v-s:canRead", true);
+    individual.add_bool("v-s:canUpdate", true);
+    
+    let access = get_access_from_individual(&mut individual);
+    assert_eq!(access, Access::CanRead as u8 | Access::CanUpdate as u8);
+}

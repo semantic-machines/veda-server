@@ -72,13 +72,15 @@ The indexer uses several data directories:
 1. **Main Processing Loop**: Listens to the message queue and processes authorization changes
 2. **Permission Statement Handler**: Processes permission grants and denials
 3. **Membership Handler**: Manages user-group relationships
-4. **ACL Cache**: Provides fast access to frequently used authorization data
-5. **Statistics Processor**: Analyzes usage patterns to optimize cache performance
+4. **Permission Filter Handler**: Processes advanced permission filters
+5. **Account Indexer**: Maintains login-to-account ID mappings
+6. **ACL Cache**: Provides fast access to frequently used authorization data
+7. **Statistics Processor**: Analyzes usage patterns to optimize cache performance
 
 ### Processing Flow
 
 1. **Queue Processing**: Listens to `individuals-flow` queue for authorization changes
-2. **Object Classification**: Determines if the change affects permissions, memberships, or filters
+2. **Object Classification**: Determines if the change affects permissions, memberships, filters, or accounts
 3. **Index Updates**: Updates LMDB-based indexes with new authorization data
 4. **Cache Management**: Updates cache entries and performs cleanup operations
 5. **Statistics Collection**: Tracks usage patterns for cache optimization
