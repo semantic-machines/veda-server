@@ -29,6 +29,7 @@ use v_individual_model::onto::parser::parse_raw;
 
 pub(crate) const LIMITATA_COGNOSCI: &[&str] = &["v-s:Credential", "v-s:Connection", "v-s:LinkedNode"];
 pub(crate) const BASE_PATH: &str = "./data";
+pub(crate) const EMPTY_SHA256_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 pub type UserId = String;
 
@@ -43,6 +44,8 @@ pub struct UserContextCache {
     pub write_tickets: Arc<Mutex<evmap::WriteHandle<String, Ticket>>>,
     pub check_ticket_ip: bool,
     pub check_external_users: bool,
+    pub reject_empty_ticket: bool,
+    pub reject_guest_user: bool,
 }
 
 pub(crate) enum VQLClientConnectType {
@@ -281,8 +284,18 @@ pub(crate) async fn check_ticket(
     db: &AStorage,
     activity_sender: &Arc<Mutex<Sender<UserId>>>,
 ) -> Result<Ticket, ResultCode> {
-    if w_ticket_id.is_none() {
-        return Ok(Ticket {
+    // Check if ticket is empty or invalid
+    let is_empty_ticket = match w_ticket_id {
+        None => true,
+        Some(t) => t.is_empty() || t == "systicket" || t == EMPTY_SHA256_HASH,
+    };
+
+    if is_empty_ticket {
+        if user_context_cache.reject_empty_ticket {
+            return Err(ResultCode::TicketNotFound);
+        }
+        
+        let guest_ticket = Ticket {
             id: "".to_string(),
             user_uri: "cfg:Guest".to_owned(),
             user_login: "".to_string(),
@@ -294,25 +307,16 @@ pub(crate) async fn check_ticket(
             domain: "".to_string(),
             initiator: "".to_string(),
             auth_origin: "".to_string(),
-        });
+        };
+        
+        if user_context_cache.reject_guest_user {
+            return Err(ResultCode::TicketNotFound);
+        }
+        
+        return Ok(guest_ticket);
     }
 
     let ticket_id = w_ticket_id.as_ref().unwrap();
-    if ticket_id.is_empty() || ticket_id == "systicket" {
-        return Ok(Ticket {
-            id: "".to_string(),
-            user_uri: "cfg:Guest".to_owned(),
-            user_login: "".to_string(),
-            result: ResultCode::Zero,
-            start_time: 0,
-            end_time: 0,
-            user_addr: "".to_string(),
-            auth_method: "".to_string(),
-            domain: "".to_string(),
-            initiator: "".to_string(),
-            auth_origin: "".to_string(),
-        });
-    }
 
     if let Some(cached_ticket) = user_context_cache.read_tickets.get(ticket_id) {
         if let Some(ticket_obj) = cached_ticket.get_one() {

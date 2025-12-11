@@ -12,8 +12,16 @@ use futures::lock::Mutex;
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use async_std::task::sleep;
 use v_common::az_impl::az_lmdb::LmdbAzContext;
+
+// Initial average authentication duration in milliseconds (used before real stats are collected)
+const INITIAL_AVG_AUTH_DURATION_MS: u64 = 10;
+
+// Global timing context for preventing user enumeration via timing attacks
+static AVG_SUCCESS_DURATION_MS: AtomicU64 = AtomicU64::new(INITIAL_AVG_AUTH_DURATION_MS);
 use v_common::module::ticket::Ticket;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::AuthClient;
@@ -168,7 +176,8 @@ async fn authenticate(
         addr: extract_addr(&req),
     };
     let initiator = extract_initiator(&req);
-    return match auth.lock().await.authenticate(login, password, extract_addr(&req), secret, Some("veda"), initiator.as_deref()) {
+
+    let response = match auth.lock().await.authenticate(login, password, extract_addr(&req), secret, Some("veda"), initiator.as_deref()) {
         Ok(r) => {
             uinf.ticket = Ticket::from(r.clone());
             if ticket_cache.check_external_users {
@@ -193,6 +202,24 @@ async fn authenticate(
             Ok(HttpResponse::new(StatusCode::from_u16(e.result as u16).unwrap_or(StatusCode::BAD_REQUEST)))
         },
     };
+
+    // Timing attack protection: ensure consistent response time
+    let elapsed_ms = start_time.elapsed().as_millis() as u64;
+
+    // Update average on successful authentication
+    if uinf.ticket.result == ResultCode::Ok {
+        let old_avg = AVG_SUCCESS_DURATION_MS.load(Ordering::Relaxed);
+        let new_avg = ((old_avg as f64) * 0.9 + (elapsed_ms as f64) * 0.1) as u64;
+        AVG_SUCCESS_DURATION_MS.store(new_avg, Ordering::Relaxed);
+    }
+
+    // Add delay if response was faster than target average
+    let target_ms = AVG_SUCCESS_DURATION_MS.load(Ordering::Relaxed);
+    if elapsed_ms < target_ms {
+        sleep(Duration::from_millis(target_ms - elapsed_ms)).await;
+    }
+
+    response
 }
 
 #[get("/get_rights")]

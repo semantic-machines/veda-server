@@ -80,6 +80,10 @@ struct Info {
 }
 
 async fn apps_doc(info: web::Path<Info>) -> std::io::Result<NamedFile> {
+    // Prevent path traversal attack
+    if info.app_name.contains("..") {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Invalid path"));
+    }
     if let Some(v) = &info.data {
         if v == "manifest" {
             return NamedFile::open(format!("public/{}/{}", info.app_name, &info.data.clone().unwrap()).parse::<PathBuf>().unwrap());
@@ -236,7 +240,14 @@ async fn main() -> std::io::Result<()> {
         };
 
         let check_ticket_ip = Module::get_property::<String>("check_ticket_ip").unwrap_or_default().parse::<bool>().unwrap_or(true);
-        info!("PARAM [check_ticket_ip] = {check_ticket_ip}");
+        let reject_empty_ticket = Module::get_property::<String>("reject_empty_ticket").unwrap_or_default().parse::<bool>().unwrap_or(true);
+        let reject_guest_user = Module::get_property::<String>("reject_guest_user").unwrap_or_default().parse::<bool>().unwrap_or(true);
+
+        info!("=== SECURITY SETTINGS ===");
+        info!("  check_ticket_ip     = {check_ticket_ip}");
+        info!("  reject_empty_ticket = {reject_empty_ticket}");
+        info!("  reject_guest_user   = {reject_guest_user}");
+        info!("=========================");
         let (ticket_cache_read, ticket_cache_write) = evmap::new();
         let (f2s_prefixes_cache_read, f2s_prefixes_cache_write) = evmap::new();
         let (s2f_prefixes_cache_read, s2f_prefixes_cache_write) = evmap::new();
@@ -278,6 +289,8 @@ async fn main() -> std::io::Result<()> {
                 write_tickets: Arc::new(Mutex::new(ticket_cache_write)),
                 check_ticket_ip,
                 check_external_users: are_external_users,
+                reject_empty_ticket,
+                reject_guest_user,
             })
             .data(PrefixesCache {
                 full2short_r: f2s_prefixes_cache_read,
@@ -320,7 +333,6 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/stored_query").route(web::post().to(stored_query)))
             .service(web::resource("/authenticate").route(web::get().to(authenticate_get)).route(web::post().to(authenticate_post)))
             .service(web::resource("/recognize_audio").route(web::post().to(recognize_audio)))
-            .service(web::resource("/augment_text").route(web::post().to(augment_text)))
             .service(
                 web::scope("/webdav")
                     // Применяем NormalizePath middleware
