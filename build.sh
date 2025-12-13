@@ -1,4 +1,3 @@
-rustup override set 1.89
 
 build_server_module () {
     BUILD_PATH=$PWD
@@ -9,6 +8,7 @@ build_server_module () {
     rm ./$module_name
 
     cd source/$module_name
+    rustup override set 1.89
     cargo build --release
     status=$?
     if test $status -ne 0
