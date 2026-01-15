@@ -37,7 +37,13 @@ fn main() -> std::io::Result<()> {
     let mut auth_data = VStorage::new(auth_data_box);
 
     let systicket = if let Ok(t) = backend.get_sys_ticket_id() {
-        t
+        let ticket = backend.get_ticket_from_db(&t);
+        if ticket.is_ticket_valid(&None, false) == v_common::v_api::common_type::ResultCode::Ok {
+            t
+        } else {
+            error!("system ticket is invalid, create new");
+            create_sys_ticket(&mut backend.storage).id
+        }
     } else {
         error!("failed to get system ticket, create new");
         create_sys_ticket(&mut backend.storage).id
