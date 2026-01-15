@@ -16,9 +16,9 @@ use v_common::module::common::load_onto;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{init_log, Module};
 use v_common::module::veda_backend::Backend;
-use v_common::onto::onto_index::OntoIndex;
 use v_common::search::common::FTQuery;
-use v_common::v_api::obj::*;
+use v_common::v_api::common_type::{OptAuthorize, ResultCode};
+use v_individual_model::onto::onto_index::OntoIndex;
 
 const TIMEOUT_INFO: u64 = 10;
 const TIMEOUT_RECV: u64 = 30;

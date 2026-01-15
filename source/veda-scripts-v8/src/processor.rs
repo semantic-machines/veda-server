@@ -7,10 +7,10 @@ use v_v8::session_cache::{commit, CallbackSharedData, Transaction};
 use v_v8::v8;
 use v_v8::v_common::ft_xapian::xapian_reader::XapianReader;
 use v_v8::v_common::module::module_impl::{get_cmd, get_inner_binobj_as_individual, PrepareError};
-use v_v8::v_common::onto::individual::Individual;
+use v_v8::v_individual_model::onto::individual::Individual;
 use v_v8::v_common::search::common::{FTQuery, QueryResult};
 use v_v8::v_common::v_api::api_client::IndvOp;
-use v_v8::v_common::v_api::obj::ResultCode;
+use v_v8::v_common::v_api::common_type::ResultCode;
 
 pub fn prepare_for_js(ctx: &mut MyContext, queue_element: &mut Individual) -> Result<(i64, usize), PrepareError> {
     let mut total_new_individuals = 0;

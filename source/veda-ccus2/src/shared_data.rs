@@ -5,8 +5,8 @@ use std::sync::mpsc::{Receiver, RecvError, SendError, Sender};
 use thiserror::Error;
 use v_common::module::module_impl::wait_load_ontology;
 use v_common::module::veda_backend::get_storage_use_prop;
-use v_common::onto::individual::Individual;
-use v_common::storage::common::{StorageMode, VStorage};
+use v_individual_model::onto::individual::Individual;
+use v_storage::{StorageMode, VStorage};
 
 #[derive(Error, Debug)]
 pub enum SharedDataManagerError {

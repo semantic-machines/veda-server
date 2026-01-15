@@ -12,12 +12,12 @@ use v_common::init_module_log;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_cmd, get_inner_binobj_as_individual, init_log, Module, PrepareError};
 use v_common::module::veda_backend::Backend;
-use v_common::onto::individual::Individual;
-use v_common::storage::common::StorageMode;
 use v_common::v_api::api_client::IndvOp;
 use v_common::v_queue::consumer::Consumer;
 use v_common::v_queue::queue::Queue;
 use v_common::v_queue::record::{Mode, MsgType};
+use v_individual_model::onto::individual::Individual;
+use v_storage::StorageMode;
 
 pub const MSTORAGE_ID: i64 = 1;
 

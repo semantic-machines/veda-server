@@ -12,14 +12,14 @@ use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::{get_info_of_module, get_inner_binobj_as_individual, init_log, wait_load_ontology, wait_module, Module, PrepareError};
 use v_common::module::veda_backend::Backend;
 use v_common::module::veda_module::VedaQueueModule;
-use v_common::onto::individual::Individual;
-use v_common::onto::individual2turtle::to_turtle;
-use v_common::onto::onto_index::OntoIndex;
-use v_common::onto::parser::parse_raw;
 use v_common::search::common::FTQuery;
-use v_common::storage::common::StorageMode;
 use v_common::v_api::api_client::IndvOp;
-use v_common::v_api::obj::ResultCode;
+use v_common::v_api::common_type::ResultCode;
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::individual2turtle::to_turtle;
+use v_individual_model::onto::onto_index::OntoIndex;
+use v_individual_model::onto::parser::parse_raw;
+use v_storage::StorageMode;
 
 struct OntologistModule {
     last_found_changes: Instant,
@@ -125,7 +125,7 @@ impl OntologistModule {
 
         for id in self.onto_index.data.keys() {
             let mut rindv: Individual = Individual::default();
-            if self.backend.storage.get_individual(id, &mut rindv) == ResultCode::Ok {
+            if self.backend.storage.get_individual(id, &mut rindv).is_ok() {
                 rindv.parse_all();
 
                 if rindv.any_exists("rdf:type", &["owl:Ontology"]) {
@@ -170,7 +170,7 @@ impl OntologistModule {
 
         for id in self.onto_index.data.keys() {
             let mut rindv: Individual = Individual::default();
-            if self.backend.storage.get_individual(id, &mut rindv) == ResultCode::Ok {
+            if self.backend.storage.get_individual(id, &mut rindv).is_ok() {
                 rindv.parse_all();
 
                 if buf.len() > 1 {

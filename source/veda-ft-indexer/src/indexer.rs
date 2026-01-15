@@ -9,11 +9,11 @@ use v_common::ft_xapian::to_lower_and_replace_delimiters;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::info::ModuleInfo;
 use v_common::module::veda_backend::Backend;
-use v_common::onto::datatype::DataType;
-use v_common::onto::individual::Individual;
-use v_common::onto::onto_impl::Onto;
-use v_common::onto::resource::Resource;
 use v_common::v_api::api_client::IndvOp;
+use v_individual_model::onto::datatype::DataType;
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::onto_impl::Onto;
+use v_individual_model::onto::resource::Resource;
 use xapian_rusty::*;
 
 pub const BATCH_SIZE_OF_TRANSACTION: i64 = 5000;

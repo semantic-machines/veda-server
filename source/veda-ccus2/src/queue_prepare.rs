@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use v_common::onto::individual::{Individual, RawObj};
-use v_common::onto::parser::parse_raw;
+use v_individual_model::onto::individual::{Individual, RawObj};
+use v_individual_model::onto::parser::parse_raw;
 use v_common::v_queue::consumer::Consumer;
 use v_common::v_queue::record::ErrorQueue;
 

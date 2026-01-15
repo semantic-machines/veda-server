@@ -25,11 +25,11 @@ use v_common::module::common::load_onto;
 use v_common::module::info::ModuleInfo;
 use v_common::module::module_impl::init_log;
 use v_common::module::veda_backend::Backend;
-use v_common::onto::datatype::Lang;
-use v_common::onto::individual::Individual;
-use v_common::onto::onto_impl::Onto;
 use v_common::v_api::api_client::IndvOp;
-use v_common::v_api::obj::*;
+use v_common::v_api::common_type::ResultCode;
+use v_individual_model::onto::datatype::Lang;
+use v_individual_model::onto::individual::Individual;
+use v_individual_model::onto::onto_impl::Onto;
 
 #[derive(Serialize, Deserialize)]
 struct FileHash {
@@ -336,7 +336,7 @@ fn processing_files(files_paths: Vec<PathBuf>, hash_list: &mut HashMap<String, S
     }
 
     for (prefix, full_url) in prefixes.id2namespaces.iter() {
-        if !loaded_owl_ontology.contains(prefix) && backend.storage.get_individual(prefix, &mut Individual::default()) != ResultCode::Ok {
+        if !loaded_owl_ontology.contains(prefix) && backend.storage.get_individual(prefix, &mut Individual::default()).is_error() {
             warn!("prefix not found {}, generate individual", prefix);
             let mut prefix_indv = Individual::default();
             prefix_indv.set_id(prefix);

@@ -1,7 +1,7 @@
 use crate::Indexer;
 use chrono::{TimeZone, Utc};
 use v_common::ft_xapian::to_lower_and_replace_delimiters;
-use v_common::onto::resource::Resource;
+use v_individual_model::onto::resource::Resource;
 use xapian_rusty::*;
 
 pub struct IndexDocWorkplace {

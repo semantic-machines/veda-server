@@ -21,10 +21,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 
-v_common = { package = "v-common", version = "=0.17.5", features = ["tokio_0_2", "tt_2", "awc_2"] }
+v_common = { package = "v-common", version = "=0.17.6", features = ["tokio_0_2", "tt_2", "awc_2"] }
 #v_common = { package = "v-common", path = "../../../v-common", features = ["tokio_0_2", "tt_2", "awc_2"]}
 
-v-individual-model = "0.2.5"
+v-individual-model = "0.2.6"
 #v-individual-model = { package = "v-individual-model", path = "../../../v-individual-model"}
-
-
