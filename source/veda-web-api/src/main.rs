@@ -177,13 +177,15 @@ async fn main() -> std::io::Result<()> {
 
         // SMS authentication configuration - simplified for veda-auth
         let sms_config = if let Ok(conf) = Ini::load_from_file("config/veda-web-api.ini") {
-            let section = conf.section(Some("sms")).expect("Section 'sms' not found");
-            
-            SmsAuthConfig {
-                enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
-                client_secret: section.get("client_secret").expect("client_secret not found").to_string(),
-                max_time_drift: section.get("max_time_drift").unwrap_or("300").parse().unwrap_or(300),
-                rsa_key_path: section.get("rsa_key_path").map(|s| s.to_string()),
+            if let Some(section) = conf.section(Some("sms")) {
+                SmsAuthConfig {
+                    enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
+                    client_secret: section.get("client_secret").unwrap_or("default-secret-key").to_string(),
+                    max_time_drift: section.get("max_time_drift").unwrap_or("300").parse().unwrap_or(300),
+                    rsa_key_path: section.get("rsa_key_path").map(|s| s.to_string()),
+                }
+            } else {
+                SmsAuthConfig::default()
             }
         } else {
             SmsAuthConfig::default()
