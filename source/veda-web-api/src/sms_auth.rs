@@ -349,7 +349,7 @@ impl SmsAuthService {
         let normalized_phone = self.normalize_phone(&request.phone)?;
 
         // Call veda-auth API to request SMS code
-        match auth_client.lock().await.authenticate(&normalized_phone, &None, ip_addr, &None, Some("veda"), initiator) {
+        match auth_client.lock().await.authenticate(&normalized_phone, &None, ip_addr, &None, Some("veda"), initiator, None) {
             Ok(_) => {
                 info!("SMS auth code requested for {}", normalized_phone);
                 
@@ -429,7 +429,7 @@ impl SmsAuthService {
 
         // Verify SMS code via veda-auth
         info!("[{}] DEBUG: calling veda-auth for phone: '{}'", request_id, session_data.phone);
-        match auth_client.lock().await.authenticate(&session_data.phone, &None, ip_addr, &Some(code.to_string()), Some("veda"), initiator) {
+        match auth_client.lock().await.authenticate(&session_data.phone, &None, ip_addr, &Some(code.to_string()), Some("veda"), initiator, None) {
             Ok(auth_result) => {
                 info!("[{}] DEBUG: auth successful", request_id);
                 Ok(auth_result)

@@ -129,6 +129,7 @@ fn req_prepare(
             let login = v["login"].as_str().unwrap_or_default();
             let password = v["password"].as_str().unwrap_or_default();
             let secret = v["secret"].as_str().unwrap_or_default();
+            let provider = v["provider"].as_str().unwrap_or_default();
             let ip = v["addr"].as_str().unwrap_or_default();
             let domain = v["domain"].as_str().unwrap_or("veda");
             let initiator = v["initiator"].as_str().unwrap_or("authenticate");
@@ -141,6 +142,7 @@ fn req_prepare(
                 password,
                 ip,
                 secret,
+                provider,
                 sys_ticket: systicket,
                 xr,
                 backend,

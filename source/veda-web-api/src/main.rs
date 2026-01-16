@@ -9,6 +9,7 @@ mod get;
 mod multifactor;
 mod nlp_transcription;
 mod query;
+mod sbis_auth;
 mod sms_auth;
 mod update;
 mod user_activity;
@@ -23,6 +24,7 @@ use crate::common::{db_connector, load_auth_access_config, NLPServerConfig, Tran
 use crate::files::{load_file, save_file};
 use crate::get::{get_individual, get_individuals, get_operation_state};
 use crate::multifactor::{handle_post_request, MultifactorProps};
+use crate::sbis_auth::{sbis_authenticate, SbisAuthConfig, SbisAuthService};
 use crate::sms_auth::{salted_sms_request, verify_sms_auth, SmsAuthConfig, SmsAuthService};
 use crate::nlp_transcription::recognize_audio;
 use crate::query::{query_get, query_post, stored_query, QueryEndpoints};
@@ -199,6 +201,28 @@ async fn main() -> std::io::Result<()> {
             }
         };
 
+        // SBIS OAuth authentication configuration
+        let sbis_config = if let Ok(conf) = Ini::load_from_file("config/veda-web-api.ini") {
+            if let Some(section) = conf.section(Some("sbis")) {
+                SbisAuthConfig {
+                    enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
+                    base_url: section.get("base_url").unwrap_or("https://online.sbis.ru").to_string(),
+                    user_info_endpoint: section.get("user_info_endpoint").unwrap_or("/service/user_info").to_string(),
+                }
+            } else {
+                SbisAuthConfig::default()
+            }
+        } else {
+            SbisAuthConfig::default()
+        };
+
+        let sbis_service = SbisAuthService::new(sbis_config.clone());
+        if sbis_config.enabled {
+            info!("SBIS authentication service enabled, base_url: {}", sbis_config.base_url);
+        } else {
+            info!("SBIS authentication service disabled");
+        }
+
         // Load authentication method access configuration
         let auth_access_config = load_auth_access_config();
         info!("Loaded auth access config with restrictions for: {:?}", auth_access_config.restrictions.keys().collect::<Vec<_>>());
@@ -280,6 +304,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(nlp_server_config))
             .app_data(web::Data::new(transcription_config))
             .app_data(web::Data::new(sms_service))
+            .app_data(web::Data::new(sbis_service))
             .app_data(web::Data::new(auth_access_config))
             .data(Arc::new(Mutex::new(tx.clone())))
             .data(UserContextCache {
@@ -357,6 +382,10 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/auth/sms")
                     .service(web::resource("/request").route(web::post().to(salted_sms_request)))
                     .service(web::resource("/verify").route(web::post().to(verify_sms_auth)))
+            )
+            .service(
+                web::scope("/auth/sbis")
+                    .service(web::resource("/authenticate").route(web::post().to(sbis_authenticate)))
             )
             .service(web::resource("/").guard(guard::Post()).route(web::post().to(handle_post_request)))
             .service(Files::new("/", "./public").redirect_to_slash_directory().index_file("index.html"))

@@ -24,6 +24,7 @@ pub struct AuthWorkPlace<'a> {
     pub password: &'a str,
     pub ip: &'a str,
     pub secret: &'a str,
+    pub provider: &'a str,
     pub sys_ticket: &'a str,
     pub xr: &'a mut XapianReader,
     pub backend: &'a mut Backend,
@@ -136,6 +137,21 @@ impl<'a> AuthWorkPlace<'a> {
                 }
                 
                 self.get_credential(&mut account);
+
+                // External provider authentication (e.g. SBIS OAuth)
+                // Skip password/SMS verification - user already authenticated by external provider
+                if !self.provider.is_empty() {
+                    info!("External provider authentication: provider = {}, login = {}", self.provider, self.login);
+                    let addr = if self.conf.check_ticket_ip {
+                        self.ip
+                    } else {
+                        "127.0.0.1"
+                    };
+                    create_new_ticket_with_auth_info(self.login, &user_id, addr, self.conf.ticket_lifetime, ticket, &mut self.backend.storage, self.provider, self.domain, self.initiator, &self.origin);
+                    self.user_stat.wrong_count_login = 0;
+                    self.user_stat.last_wrong_login_date = 0;
+                    return (true, ResultCode::Ok);
+                }
 
                 // Check for SMS code request (phone number + empty password + empty secret)
                 if MobileAuth::is_sms_code_request(self.login, self.password, self.secret) {

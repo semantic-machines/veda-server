@@ -48,6 +48,7 @@ fi
 ./tools/update-version-ttl.sh
 
 export CARGO_TARGET_DIR=$HOME/target
+export LIBRARY_PATH="/usr/local/lib"
 
 if [ -z $1 ] || [ $1 == "bootstrap" ] || [ $1 == "veda" ] || [ $1 == "basic" ] || [ $1 == "all" ]; then
     build_server_module "veda-bootstrap"
