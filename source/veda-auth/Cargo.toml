@@ -25,7 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 configparser = "3.0"
 
 #v_common = { package = "v-common", path = "../../../v-common", features = ["tokio_0_2", "tt_2", "awc_2"]}
-v_common = { package = "v-common", version = "=0.17.0", features = ["tokio_0_2", "tt_2", "awc_2"] }
+v_common = { package = "v-common", version = "=0.18.0", features = ["tokio_0_2", "tt_2", "awc_2"] }
 v-individual-model = "0.2.0"
 v-storage = "0.1.1"
 
