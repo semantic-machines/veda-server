@@ -210,6 +210,7 @@ async fn main() -> std::io::Result<()> {
                     enabled: section.get("enabled").unwrap_or("false").parse().unwrap_or(false),
                     base_url: section.get("base_url").unwrap_or("https://online.sbis.ru").to_string(),
                     user_info_endpoint: section.get("user_info_endpoint").unwrap_or("/service/user_info").to_string(),
+                    user_link_field: section.get("user_link_field").unwrap_or("МобильныйТелефонПользователя").to_string(),
                 }
             } else {
                 SbisAuthConfig::default()

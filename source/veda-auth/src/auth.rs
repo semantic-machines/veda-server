@@ -132,7 +132,7 @@ impl<'a> AuthWorkPlace<'a> {
 
             if let Some(mut person) = self.backend.get_individual_s(&user_id) {
                 if person.is_empty() {
-                    error!("failed to authenticate: login = {}, password = {}, user not found", self.login, self.password);
+                    error!("failed to authenticate: login = {}, password = {}, user not found, user_id={}", self.login, self.password, user_id);
                     ticket.result = ResultCode::AuthenticationFailed;
                 }
                 
