@@ -1,4 +1,5 @@
 use crate::acl_cache::ACLCache;
+use crate::tarantool_indexer::TarantoolIndexer;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::error::Error;
@@ -8,7 +9,7 @@ use v_common::module::info::ModuleInfo;
 use v_individual_model::onto::individual::Individual;
 use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE, PERMISSION_PREFIX};
 use v_common::v_authorization::{ACLRecord, ACLRecordSet};
-use log::{warn, debug};
+use log::{warn, debug, error};
 
 // Trait for abstract storage operations
 pub trait Storage {
@@ -64,6 +65,7 @@ pub struct Context {
     pub version_of_index_format: u8,
     pub module_info: ModuleInfo,
     pub acl_cache: Option<ACLCache>,
+    pub tarantool_indexer: Option<TarantoolIndexer>,
 }
 
 // Function to get the access value from an individual object
@@ -406,6 +408,14 @@ fn update_right_set(
                         key: key.clone(),
                         source: "acl_cache".to_string(),
                     });
+                }
+            }
+
+            // Write to Tarantool if configured
+            if let Some(tt) = &ctx.tarantool_indexer {
+                debug!("NEW(TARANTOOL): {} {} {:?}", source_id, rs, new_record);
+                if !tt.put(&key, &new_record) {
+                    error!("Failed to write to Tarantool: key={}", key);
                 }
             }
         }

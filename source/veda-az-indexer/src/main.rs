@@ -20,6 +20,9 @@ use v_common::v_queue::consumer::Consumer;
 
 mod acl_cache;
 mod common;
+mod tarantool_indexer;
+
+use crate::tarantool_indexer::{IndexerConfig, TarantoolIndexer};
 
 // Implementation of Storage trait for LmdbInstance
 impl Storage for LmdbInstance {
@@ -53,6 +56,21 @@ fn main() -> Result<(), i32> {
         return Err(-1);
     }
 
+    // Parse command line arguments for config
+    let args: Vec<String> = env::args().collect();
+    let indexer_config = parse_indexer_config(&args);
+    
+    // Determine consumer name (with optional suffix from config)
+    let consumer_name = indexer_config
+        .as_ref()
+        .map(|c| c.get_consumer_name())
+        .unwrap_or_else(|| "az-indexer".to_string());
+    
+    // Initialize Tarantool indexer if config is provided
+    let tarantool_indexer = indexer_config
+        .as_ref()
+        .and_then(init_tarantool_indexer);
+
     let mut ctx = Context {
         permission_statement_counter: 0,
         membership_counter: 0,
@@ -60,6 +78,7 @@ fn main() -> Result<(), i32> {
         version_of_index_format: 2,
         module_info: module_info.unwrap(),
         acl_cache: ACLCache::new(&config),
+        tarantool_indexer,
     };
 
     if ctx.storage.get("Pcfg:VedaSystem").is_none() {
@@ -76,15 +95,19 @@ fn main() -> Result<(), i32> {
         }
     }
 
-    let mut queue_consumer = Consumer::new("./data/queue", "az-indexer", "individuals-flow").expect("!!!!!!!!! FAIL QUEUE");
+    let mut queue_consumer = Consumer::new("./data/queue", &consumer_name, "individuals-flow").expect("!!!!!!!!! FAIL QUEUE");
+    info!("Using consumer name: {}", consumer_name);
 
-    for el in env::args().collect::<Vec<String>>().iter() {
+    for el in args.iter() {
         if el.starts_with("--use_index_format_v1") {
             ctx.version_of_index_format = 1;
         }
     }
 
     info!("use index format version {}", ctx.version_of_index_format);
+    if ctx.tarantool_indexer.is_some() {
+        info!("Tarantool indexing enabled");
+    }
 
     let mut backend = Backend::create(StorageMode::ReadOnly, false);
     while !backend.mstorage_api.connect() {
@@ -183,17 +206,93 @@ fn prepare_permission_filter(prev_state: &mut Individual, new_state: &mut Indivi
     index_right_sets(prev_state, new_state, "v-s:permissionObject", "v-s:resource", FILTER_PREFIX, 0, ctx)
 }
 
+/// Parse --config argument and load IndexerConfig
+fn parse_indexer_config(args: &[String]) -> Option<IndexerConfig> {
+    let mut config_name: Option<String> = None;
+    
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--config" {
+            if let Some(name) = iter.next() {
+                config_name = Some(name.clone());
+            }
+        } else if let Some(name) = arg.strip_prefix("--config=") {
+            config_name = Some(name.to_string());
+        }
+    }
+    
+    let config_name = config_name?;
+    let config_path = format!("./config/{}", config_name);
+    
+    info!("Loading config from: {}", config_path);
+    
+    let mut config_file = match File::open(&config_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to open config file '{}': {}", config_path, e);
+            return None;
+        }
+    };
+    
+    let mut config_str = String::new();
+    if let Err(e) = config_file.read_to_string(&mut config_str) {
+        error!("Failed to read config file '{}': {}", config_path, e);
+        return None;
+    }
+    
+    let ini = match Ini::load_from_str(&config_str) {
+        Ok(ini) => ini,
+        Err(e) => {
+            error!("Failed to parse config file '{}': {}", config_path, e);
+            return None;
+        }
+    };
+    
+    Some(IndexerConfig::from_ini(&ini))
+}
+
+/// Initialize TarantoolIndexer from config
+fn init_tarantool_indexer(config: &IndexerConfig) -> Option<TarantoolIndexer> {
+    if !config.tarantool.enabled {
+        info!("Tarantool indexing is disabled in config");
+        return None;
+    }
+    
+    info!("Tarantool config: host={}:{}, user={}, space_id={}", 
+          config.tarantool.host, config.tarantool.port, config.tarantool.user, config.tarantool.space_id);
+    
+    match TarantoolIndexer::new(&config.tarantool) {
+        Ok(indexer) => Some(indexer),
+        Err(e) => {
+            error!("Failed to initialize Tarantool indexer: {}", e);
+            None
+        }
+    }
+}
+
 fn prepare_account(prev_state: &mut Individual, new_state: &mut Individual, ctx: &mut Context) {
     if new_state.is_empty() && !prev_state.is_empty() {
         if let Some(login) = prev_state.get_first_literal("v-s:login") {
             let key = format!("_L:{}", login.to_lowercase());
             ctx.storage.remove(&key);
+            
+            // Remove from Tarantool
+            if let Some(tt) = &ctx.tarantool_indexer {
+                tt.remove(&key);
+            }
+            
             info!("index account, remove: {} {}", prev_state.get_id(), login);
         }
     } else if let Some(login) = new_state.get_first_literal("v-s:login") {
         let key = format!("_L:{}", login.to_lowercase());
         let val = new_state.get_id();
         ctx.storage.put(&key, val);
+        
+        // Write to Tarantool
+        if let Some(tt) = &ctx.tarantool_indexer {
+            tt.put(&key, val);
+        }
+        
         info!("index account, update: {} {}", new_state.get_id(), login);
     }
 }
