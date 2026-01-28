@@ -12,7 +12,7 @@ use std::io;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_authorization_impl::AzContext;
 use v_common::module::common::c_load_onto;
 use v_common::search::clickhouse_client::CHClient;
 use v_common::search::common::{load_prefixes, AuthorizationLevel, FTQuery, PrefixesCache, QueryResult, ResultFormat};
@@ -38,7 +38,7 @@ pub(crate) async fn query_post(
     query_endpoints: web::Data<QueryEndpoints>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     prefix_cache: web::Data<PrefixesCache>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
@@ -59,7 +59,7 @@ pub(crate) async fn query_get(
     query_endpoints: web::Data<QueryEndpoints>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     prefix_cache: web::Data<PrefixesCache>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
@@ -81,7 +81,7 @@ async fn query(
     data: &QueryRequest,
     query_endpoints: web::Data<QueryEndpoints>,
     db: web::Data<AStorage>,
-    _az: web::Data<Mutex<LmdbAzContext>>,
+    _az: web::Data<Mutex<AzContext>>,
     prefix_cache: web::Data<PrefixesCache>,
 ) -> io::Result<HttpResponse> {
     if uinf.ticket.id.is_empty() {
@@ -96,7 +96,7 @@ pub(crate) async fn stored_query(
     query_endpoints: web::Data<QueryEndpoints>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     prefix_cache: web::Data<PrefixesCache>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
@@ -118,7 +118,7 @@ async fn stored_query_impl(
     data: web::Json<JSONValue>,
     query_endpoints: web::Data<QueryEndpoints>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     prefix_cache: web::Data<PrefixesCache>,
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();

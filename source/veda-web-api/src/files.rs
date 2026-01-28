@@ -23,7 +23,7 @@ use std::io::{ErrorKind, Read};
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_authorization_impl::AzContext;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
 use v_common::v_api::common_type::ResultCode;
@@ -53,7 +53,7 @@ pub struct FileItem {
     pub(crate) locked: Option<Lock>,
 }
 
-pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az: &Mutex<LmdbAzContext>) -> Result<FileItem, ResultCode> {
+pub async fn to_file_item(uinf: &UserInfo, file_info_id: &str, db: &AStorage, az: &Mutex<AzContext>) -> Result<FileItem, ResultCode> {
     let file_info_id = if !file_info_id.contains(':') {
         file_info_id.replacen('_', ":", 1)
     } else {
@@ -124,7 +124,7 @@ pub(crate) async fn load_file(
     params: web::Query<TicketRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -137,7 +137,7 @@ pub async fn get_file(
     file_id: &str,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     only_headers: bool,
@@ -228,7 +228,7 @@ pub(crate) async fn save_file(
     payload: Multipart,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -241,7 +241,7 @@ pub(crate) async fn put_file(
     bytes: Option<web::Bytes>,
     ticket_cache: web::Data<UserContextCache>,
     db: &AStorage,
-    az: &Mutex<LmdbAzContext>,
+    az: &Mutex<AzContext>,
     req: HttpRequest,
     activity_sender: &Arc<Mutex<Sender<UserId>>>,
     ticket: Option<String>,

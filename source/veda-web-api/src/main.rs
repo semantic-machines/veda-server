@@ -53,7 +53,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use url::Url;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_authorization_impl::AzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::module_impl::{init_log_with_params, Module};
 use v_common::search::clickhouse_client::CHClient;
@@ -92,12 +92,54 @@ async fn apps_doc(info: web::Path<Info>) -> std::io::Result<NamedFile> {
     NamedFile::open("public/index.html".parse::<PathBuf>().unwrap())
 }
 
+/// Create authorization context based on configuration
+fn create_az_context() -> AzContext {
+    let config = Ini::load_from_file("config/veda-web-api.ini").ok();
+    let az_section = config.as_ref().and_then(|c| c.section(Some("authorization")));
+
+    let max_read = az_section
+        .and_then(|s| s.get("lmdb_max_read_counter"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+
+    let stat_url = az_section
+        .and_then(|s| s.get("stat_url"))
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let stat_mode = az_section.and_then(|s| s.get("stat_mode")).map(String::from);
+    let use_cache = az_section
+        .and_then(|s| s.get("use_cache"))
+        .and_then(|v| v.parse().ok());
+
+    info!("Authorization backend: LMDB (max_read_counter={})", max_read);
+    AzContext::new_with_config(max_read, stat_url, stat_mode, use_cache)
+}
+
+/// Returns a list of enabled features for this build
+fn get_enabled_features() -> Vec<&'static str> {
+    let mut features = Vec::new();
+    
+    #[cfg(feature = "audio_convert")]
+    features.push("audio_convert");
+    
+    features
+}
+
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     unsafe { std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info"); }
     let module_name = "WEB_API";
     init_log_with_params(module_name, None, true);
     info!("{} {} {}", module_name, version!(), git_version!());
+    
+    let features = get_enabled_features();
+    if features.is_empty() {
+        info!("Build features: none");
+    } else {
+        info!("Build features: {}", features.join(", "));
+    }
+    info!("v_common features: {}", env!("V_COMMON_FEATURES"));
 
     let mut tt_config = None;
     if let Some(p) = Module::get_property::<String>("db_connection") {
@@ -330,7 +372,7 @@ async fn main() -> std::io::Result<()> {
                 ch_client: Mutex::new(ch),
                 sparql_client: Mutex::new(SparqlClient::default()),
             })
-            .data(Mutex::new(LmdbAzContext::new(1000)))
+            .data(Mutex::new(create_az_context()))
             .data(Mutex::new(AuthClient::new(Module::get_property("auth_url").unwrap_or_default())))
             .data(Mutex::new(MStorageClient::new(Module::get_property("main_module_url").unwrap_or_default())))
             //
