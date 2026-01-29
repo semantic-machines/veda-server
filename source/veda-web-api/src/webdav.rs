@@ -18,7 +18,7 @@ use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use mime::Mime;
 use std::sync::Arc;
-use v_authorization_impl::AzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::MStorageClient;
 use v_common::v_api::common_type::ResultCode;

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use async_std::task::sleep;
-use v_authorization_impl::AzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 
 // Initial average authentication duration in milliseconds (used before real stats are collected)
 const INITIAL_AVG_AUTH_DURATION_MS: u64 = 10;

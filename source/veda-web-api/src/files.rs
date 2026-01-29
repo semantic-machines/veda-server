@@ -23,7 +23,7 @@ use std::io::{ErrorKind, Read};
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
-use v_authorization_impl::AzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::storage::async_storage::{get_individual_from_db, AStorage};
 use v_common::v_api::api_client::{IndvOp, MStorageClient};
 use v_common::v_api::common_type::ResultCode;

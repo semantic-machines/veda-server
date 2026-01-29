@@ -53,7 +53,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use url::Url;
-use v_authorization_impl::AzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::module_impl::{init_log_with_params, Module};
 use v_common::search::clickhouse_client::CHClient;
@@ -97,22 +97,61 @@ fn create_az_context() -> AzContext {
     let config = Ini::load_from_file("config/veda-web-api.ini").ok();
     let az_section = config.as_ref().and_then(|c| c.section(Some("authorization")));
 
-    let max_read = az_section
-        .and_then(|s| s.get("lmdb_max_read_counter"))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000);
+    let backend = az_section
+        .and_then(|s| s.get("backend"))
+        .unwrap_or("lmdb");
 
     let stat_url = az_section
         .and_then(|s| s.get("stat_url"))
         .filter(|s| !s.is_empty())
         .map(String::from);
     let stat_mode = az_section.and_then(|s| s.get("stat_mode")).map(String::from);
-    let use_cache = az_section
-        .and_then(|s| s.get("use_cache"))
-        .and_then(|v| v.parse().ok());
 
-    info!("Authorization backend: LMDB (max_read_counter={})", max_read);
-    AzContext::new_with_config(max_read, stat_url, stat_mode, use_cache)
+    if backend == "tarantool" {
+        let tt_section = config.as_ref().and_then(|c| c.section(Some("authorization_tarantool")));
+
+        // Check for external config file
+        let external_config = tt_section
+            .and_then(|s| s.get("config_path"))
+            .filter(|s| !s.is_empty())
+            .and_then(|path| Ini::load_from_file(path).ok());
+
+        let tt_config_section = external_config
+            .as_ref()
+            .and_then(|c| c.section(Some("tarantool")))
+            .or(tt_section);
+
+        let host = tt_config_section
+            .and_then(|s| s.get("host"))
+            .filter(|s| !s.is_empty())
+            .expect("Tarantool host not configured in [authorization_tarantool]");
+        let port = tt_config_section
+            .and_then(|s| s.get("port"))
+            .filter(|s| !s.is_empty())
+            .expect("Tarantool port not configured in [authorization_tarantool]");
+        let user = tt_config_section
+            .and_then(|s| s.get("user"))
+            .filter(|s| !s.is_empty())
+            .expect("Tarantool user not configured in [authorization_tarantool]");
+        let password = tt_config_section
+            .and_then(|s| s.get("password"))
+            .unwrap_or("");
+
+        let uri = format!("{}:{}", host, port);
+        info!("Authorization backend: Tarantool (uri={}, user={})", uri, user);
+        AzContext::new_tarantool_with_config(&uri, user, password, stat_url, stat_mode)
+    } else {
+        let max_read = az_section
+            .and_then(|s| s.get("lmdb_max_read_counter"))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
+        let use_cache = az_section
+            .and_then(|s| s.get("use_cache"))
+            .and_then(|v| v.parse().ok());
+
+        info!("Authorization backend: LMDB (max_read_counter={})", max_read);
+        AzContext::new_lmdb_with_config(max_read, stat_url, stat_mode, use_cache)
+    }
 }
 
 /// Returns a list of enabled features for this build

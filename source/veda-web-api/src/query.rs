@@ -12,7 +12,7 @@ use std::io;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
-use v_authorization_impl::AzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::module::common::c_load_onto;
 use v_common::search::clickhouse_client::CHClient;
 use v_common::search::common::{load_prefixes, AuthorizationLevel, FTQuery, PrefixesCache, QueryResult, ResultFormat};

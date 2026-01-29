@@ -22,7 +22,7 @@ use v_common::storage::async_storage::{get_individual_from_db, get_individual_us
 use v_storage::{Storage, StorageId, StorageMode};
 use v_storage::lmdb_storage::LMDBStorage;
 use v_common::v_api::common_type::ResultCode;
-use v_authorization_impl::AzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::v_authorization::common::{Access, AuthorizationContext, Trace};
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::parser::parse_raw;
