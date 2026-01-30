@@ -9,7 +9,7 @@ use v_common::module::info::ModuleInfo;
 use v_individual_model::onto::individual::Individual;
 use v_common::v_authorization::common::{Access, M_IGNORE_EXCLUSIVE, M_IS_EXCLUSIVE, PERMISSION_PREFIX};
 use v_common::v_authorization::{ACLRecord, ACLRecordSet};
-use log::{warn, debug, error};
+use log::{warn, debug};
 
 // Trait for abstract storage operations
 pub trait Storage {
@@ -390,32 +390,35 @@ fn update_right_set(
             debug!("NEW(MEM): {} {} {:?}", source_id, rs, new_record);
             cache_ctx.cache.insert(key, new_record);
         } else {
-            debug!("NEW(STORAGE): {} {} {:?}", source_id, rs, new_record);
-            
-            if !ctx.storage.put(&key, &new_record) {
-                return Err(StorageError::StoragePutError {
-                    key: key.clone(),
-                    source: "storage".to_string(),
-                });
-            }
-
-            if let Some(c) = &mut ctx.acl_cache {
-                let new_record = encode_record(Some(Utc::now()), &new_right_set, ctx.version_of_index_format);
-                debug!("NEW(CACHE): {} {} {:?}", source_id, rs, new_record);
-                
-                if !c.instance.put(&key, new_record) {
-                    return Err(StorageError::StoragePutError {
-                        key: key.clone(),
-                        source: "acl_cache".to_string(),
-                    });
-                }
-            }
-
-            // Write to Tarantool if configured
+            // Write to either Tarantool or LMDB, not both
             if let Some(tt) = &ctx.tarantool_indexer {
                 debug!("NEW(TARANTOOL): {} {} {:?}", source_id, rs, new_record);
                 if !tt.put(&key, &new_record) {
-                    error!("Failed to write to Tarantool: key={}", key);
+                    return Err(StorageError::StoragePutError {
+                        key: key.clone(),
+                        source: "tarantool".to_string(),
+                    });
+                }
+            } else {
+                debug!("NEW(STORAGE): {} {} {:?}", source_id, rs, new_record);
+                
+                if !ctx.storage.put(&key, &new_record) {
+                    return Err(StorageError::StoragePutError {
+                        key: key.clone(),
+                        source: "storage".to_string(),
+                    });
+                }
+
+                if let Some(c) = &mut ctx.acl_cache {
+                    let new_record = encode_record(Some(Utc::now()), &new_right_set, ctx.version_of_index_format);
+                    debug!("NEW(CACHE): {} {} {:?}", source_id, rs, new_record);
+                    
+                    if !c.instance.put(&key, new_record) {
+                        return Err(StorageError::StoragePutError {
+                            key: key.clone(),
+                            source: "acl_cache".to_string(),
+                        });
+                    }
                 }
             }
         }

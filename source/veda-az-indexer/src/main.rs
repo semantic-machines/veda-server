@@ -106,7 +106,9 @@ fn main() -> Result<(), i32> {
 
     info!("use index format version {}", ctx.version_of_index_format);
     if ctx.tarantool_indexer.is_some() {
-        info!("Tarantool indexing enabled");
+        info!("Storage mode: TARANTOOL (LMDB disabled)");
+    } else {
+        info!("Storage mode: LMDB (Tarantool disabled)");
     }
 
     let mut backend = Backend::create(StorageMode::ReadOnly, false);
@@ -274,11 +276,12 @@ fn prepare_account(prev_state: &mut Individual, new_state: &mut Individual, ctx:
     if new_state.is_empty() && !prev_state.is_empty() {
         if let Some(login) = prev_state.get_first_literal("v-s:login") {
             let key = format!("_L:{}", login.to_lowercase());
-            ctx.storage.remove(&key);
             
-            // Remove from Tarantool
+            // Remove from either Tarantool or LMDB, not both
             if let Some(tt) = &ctx.tarantool_indexer {
                 tt.remove(&key);
+            } else {
+                ctx.storage.remove(&key);
             }
             
             info!("index account, remove: {} {}", prev_state.get_id(), login);
@@ -286,11 +289,12 @@ fn prepare_account(prev_state: &mut Individual, new_state: &mut Individual, ctx:
     } else if let Some(login) = new_state.get_first_literal("v-s:login") {
         let key = format!("_L:{}", login.to_lowercase());
         let val = new_state.get_id();
-        ctx.storage.put(&key, val);
         
-        // Write to Tarantool
+        // Write to either Tarantool or LMDB, not both
         if let Some(tt) = &ctx.tarantool_indexer {
             tt.put(&key, val);
+        } else {
+            ctx.storage.put(&key, val);
         }
         
         info!("index account, update: {} {}", new_state.get_id(), login);
