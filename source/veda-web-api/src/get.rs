@@ -12,7 +12,7 @@ use futures::lock::Mutex;
 use std::io;
 use std::sync::Arc;
 use std::time::Instant;
-use v_authorization_impl_tt2_lmdb::AzContext;
+use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::module::info::ModuleInfo;
 use v_common::module::ticket::Ticket;
 use v_common::storage::async_storage::{check_user_in_group, get_individual_from_db, AStorage};
@@ -51,7 +51,7 @@ pub(crate) async fn get_individuals(
     ticket_cache: web::Data<UserContextCache>,
     payload: web::Json<Uris>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -96,7 +96,7 @@ pub(crate) async fn get_individual(
     params: web::Query<TicketUriRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,

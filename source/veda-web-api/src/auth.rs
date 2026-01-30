@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use async_std::task::sleep;
-use v_authorization_impl_tt2_lmdb::AzContext;
+use v_common::az_impl::az_lmdb::LmdbAzContext;
 
 // Initial average authentication duration in milliseconds (used before real stats are collected)
 const INITIAL_AVG_AUTH_DURATION_MS: u64 = 10;
@@ -227,7 +227,7 @@ pub(crate) async fn get_rights(
     params: web::Query<TicketUriRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -277,7 +277,7 @@ pub(crate) async fn get_membership(
     params: web::Query<TicketUriRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -335,7 +335,7 @@ pub(crate) async fn get_rights_origin(
     params: web::Query<TicketUriRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,

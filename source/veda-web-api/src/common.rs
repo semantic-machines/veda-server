@@ -18,11 +18,11 @@ use std::time::Instant;
 use v_common::ft_xapian::xapian_reader::XapianReader;
 use v_common::module::ticket::Ticket;
 use v_common::search::ft_client::FTClient;
-use v_common::storage::async_storage::{get_individual_from_db, get_individual_use_storage_id, AStorage, TICKETS_SPACE_ID};
+use v_common::storage::async_storage::{check_user_in_group, get_individual_from_db, get_individual_use_storage_id, AStorage, TICKETS_SPACE_ID};
 use v_storage::{Storage, StorageId, StorageMode};
 use v_storage::lmdb_storage::LMDBStorage;
 use v_common::v_api::common_type::ResultCode;
-use v_authorization_impl_tt2_lmdb::AzContext;
+use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::v_authorization::common::{Access, AuthorizationContext, Trace};
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::parser::parse_raw;
@@ -517,7 +517,7 @@ pub fn load_auth_access_config() -> AuthAccessConfig {
 pub async fn check_auth_method_resource_access(
     resource_uri: &str,
     auth_method: &str,
-    az_context: Option<&web::Data<Mutex<AzContext>>>,
+    az_context: Option<&web::Data<Mutex<LmdbAzContext>>>,
     config: &AuthAccessConfig,
 ) -> Result<bool, ResultCode> {
     // If no authorization context available, deny access by default
@@ -557,7 +557,7 @@ pub async fn check_auth_method_resource_access(
 pub async fn validate_auth_method_access(
     user_info: &UserInfo,
     resource_uri: &str,
-    az_context: Option<&web::Data<Mutex<AzContext>>>,
+    az_context: Option<&web::Data<Mutex<LmdbAzContext>>>,
     config: &AuthAccessConfig,
 ) -> ResultCode {
     // Skip empty auth methods
@@ -589,7 +589,7 @@ pub async fn validate_auth_method_access(
 
 /// Check if an object belongs to a specific group
 /// Uses system user for authorization context since we only care about object's group membership
-pub async fn check_object_in_group(object_id: &str, group_id: &str, az: Option<&web::Data<Mutex<AzContext>>>) -> io::Result<bool> {
+pub async fn check_object_in_group(object_id: &str, group_id: &str, az: Option<&web::Data<Mutex<LmdbAzContext>>>) -> io::Result<bool> {
     if let Some(a) = az {
         let mut tr = Trace {
             acl: &mut "".to_string(),

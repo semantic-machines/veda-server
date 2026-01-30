@@ -18,7 +18,7 @@ use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use mime::Mime;
 use std::sync::Arc;
-use v_authorization_impl_tt2_lmdb::AzContext;
+use v_common::az_impl::az_lmdb::LmdbAzContext;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::MStorageClient;
 use v_common::v_api::common_type::ResultCode;
@@ -30,7 +30,7 @@ pub(crate) async fn handle_webdav_put(
     payload: Multipart,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -66,7 +66,7 @@ pub(crate) async fn handle_webdav_options_2(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id) = path.into_inner();
@@ -77,7 +77,7 @@ pub(crate) async fn handle_webdav_options_3(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id, _) = path.into_inner();
@@ -90,7 +90,7 @@ async fn handle_webdav_options(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let uinf = match get_user_info(Some(ticket), &req, &ticket_cache, &db, &activity_sender).await {
@@ -116,7 +116,7 @@ pub(crate) async fn handle_webdav_head(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
@@ -130,7 +130,7 @@ async fn handle_webdav_propfind(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     is_file: bool,
 ) -> io::Result<HttpResponse> {
@@ -159,7 +159,7 @@ pub(crate) async fn handle_webdav_propfind_3(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id, _file_name) = path.into_inner();
@@ -171,7 +171,7 @@ pub(crate) async fn handle_webdav_propfind_2(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id) = path.into_inner();
@@ -183,7 +183,7 @@ pub(crate) async fn handle_webdav_proppatch(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
     let (ticket, file_id, _file_name) = path.into_inner();
@@ -208,7 +208,7 @@ pub(crate) async fn handle_webdav_lock(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
@@ -274,7 +274,7 @@ pub(crate) async fn handle_webdav_unlock(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
@@ -320,7 +320,7 @@ async fn handle_webdav_get(
     file_id: String,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -332,7 +332,7 @@ pub(crate) async fn handle_webdav_get_3(
     path: web::Path<(String, String, String)>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -345,7 +345,7 @@ pub(crate) async fn handle_webdav_get_2(
     path: web::Path<(String, String)>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<AzContext>>,
+    az: web::Data<Mutex<LmdbAzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
