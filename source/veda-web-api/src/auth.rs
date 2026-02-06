@@ -4,8 +4,9 @@ use crate::common::{
 };
 use crate::common::{get_user_info, log};
 use crate::multifactor::{multifactor, MultifactorProps};
+use actix_web::cookie::{Cookie, SameSite};
 use actix_web::http::StatusCode;
-use actix_web::{get, HttpRequest};
+use actix_web::{get, HttpMessage, HttpRequest};
 use actix_web::{web, HttpResponse};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use async_std::task::sleep;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 
 // Initial average authentication duration in milliseconds (used before real stats are collected)
 const INITIAL_AVG_AUTH_DURATION_MS: u64 = 10;
@@ -29,6 +30,31 @@ use v_common::v_api::common_type::ResultCode;
 use v_common::v_authorization::common::{Access, AuthorizationContext, Trace, ACCESS_8_LIST, ACCESS_PREDICATE_LIST};
 use v_individual_model::onto::datatype::Lang;
 use v_individual_model::onto::individual::Individual;
+
+/// Create HttpOnly cookie with ticket for secure session management.
+/// Cookie is not accessible from JavaScript, protecting against XSS attacks.
+pub fn create_ticket_cookie(ticket_id: &str, end_time: i64) -> Cookie<'static> {
+    // Convert .NET ticks to Unix timestamp (seconds)
+    let unix_seconds = (end_time - 621355968000000000) / 10000000;
+    let expires = time::OffsetDateTime::from_unix_timestamp(unix_seconds);
+    
+    Cookie::build("ticket", ticket_id.to_owned())
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .expires(expires)
+        .finish()
+}
+
+/// Create expired cookie to clear ticket on logout
+fn create_expired_ticket_cookie() -> Cookie<'static> {
+    Cookie::build("ticket", "")
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .expires(time::OffsetDateTime::unix_epoch())
+        .finish()
+}
 
 #[get("get_ticket_trusted")]
 pub(crate) async fn get_ticket_trusted(
@@ -45,7 +71,14 @@ pub(crate) async fn get_ticket_trusted(
         addr: extract_addr(&req),
     };
 
-    if let Err(e) = check_ticket(&Some(params.ticket.clone()), &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
+    // Get ticket from params or cookie
+    let ticket_id = if !params.ticket.is_empty() {
+        params.ticket.clone()
+    } else {
+        req.cookie("ticket").map(|c: Cookie| c.value().to_owned()).unwrap_or_default()
+    };
+
+    if let Err(e) = check_ticket(&Some(ticket_id.clone()), &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
         log(Some(&start_time), &uinf, "get_ticket_trusted", &format!("login={:?}, ip={:?}", params.login, params.ip), e);
         return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap()));
     }
@@ -60,10 +93,14 @@ pub(crate) async fn get_ticket_trusted(
         uinf.addr
     };
 
-    return match auth.lock().await.get_ticket_trusted(&params.ticket, params.login.as_ref(), user_addr, Some("veda")) {
+    return match auth.lock().await.get_ticket_trusted(&ticket_id, params.login.as_ref(), user_addr, Some("veda")) {
         Ok(r) => {
             log(Some(&start_time), &uinf, "get_ticket_trusted", &format!("login={:?}, ip={:?}", params.login, params.ip), ResultCode::Ok);
-            Ok(HttpResponse::Ok().json(r))
+            
+            // Update HttpOnly cookie with new ticket
+            let new_ticket = Ticket::from(r.clone());
+            let cookie = create_ticket_cookie(&new_ticket.id, new_ticket.end_time);
+            Ok(HttpResponse::Ok().cookie(cookie).json(r))
         },
         Err(e) => {
             log(Some(&start_time), &uinf, "get_ticket_trusted", &format!("login={:?}, ip={:?}", params.login, params.ip), e.result);
@@ -87,26 +124,34 @@ pub(crate) async fn logout(
         addr: extract_addr(&req)
     };
 
-    match check_ticket(&params.ticket, &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
+    // Get ticket from params or cookie
+    let ticket_id = params.ticket.clone().or_else(|| req.cookie("ticket").map(|c: Cookie| c.value().to_owned()));
+    
+    match check_ticket(&ticket_id, &ticket_cache, &uinf.addr, &tt, &activity_sender).await {
         Ok(_user_uri) => {
-            return match auth.lock().await.logout(&params.ticket, uinf.addr) {
+            return match auth.lock().await.logout(&ticket_id, uinf.addr) {
                 Ok(r) => {
                     let mut t = ticket_cache.write_tickets.lock().await;
-                    t.empty(params.ticket.clone().unwrap_or_default());
+                    t.empty(ticket_id.clone().unwrap_or_default());
                     t.refresh();
 
-                    log(Some(&start_time), &uinf, "logout", &format!("ticket={:?}, ip={:?}", params.ticket, uinf.addr), ResultCode::Ok);
-                    Ok(HttpResponse::Ok().json(r))
+                    log(Some(&start_time), &uinf, "logout", &format!("ticket={:?}, ip={:?}", ticket_id, uinf.addr), ResultCode::Ok);
+                    
+                    // Clear HttpOnly cookie
+                    let cookie = create_expired_ticket_cookie();
+                    Ok(HttpResponse::Ok().cookie(cookie).json(r))
                 },
                 Err(e) => {
-                    log(Some(&start_time), &uinf, "logout", &format!("ticket={:?}, ip={:?}", params.ticket, uinf.addr), e.result);
+                    log(Some(&start_time), &uinf, "logout", &format!("ticket={:?}, ip={:?}", ticket_id, uinf.addr), e.result);
                     Ok(HttpResponse::new(StatusCode::from_u16(e.result as u16).unwrap()))
                 },
             }
         },
         Err(e) => {
-            log_w(Some(&start_time), &params.ticket, &extract_addr(&req), "", "logout", "", e);
-            Ok(HttpResponse::Ok().json(false))
+            log_w(Some(&start_time), &ticket_id, &extract_addr(&req), "", "logout", "", e);
+            // Still clear cookie even if ticket validation failed
+            let cookie = create_expired_ticket_cookie();
+            Ok(HttpResponse::Ok().cookie(cookie).json(false))
         },
     }
 }
@@ -121,17 +166,20 @@ pub(crate) async fn is_ticket_valid(
 ) -> io::Result<HttpResponse> {
     let start_time = Instant::now();
 
-    if params.ticket.is_none() {
+    // Get ticket from params or cookie
+    let ticket_id = params.ticket.clone().or_else(|| req.cookie("ticket").map(|c: Cookie| c.value().to_owned()));
+
+    if ticket_id.is_none() {
         return Ok(HttpResponse::Ok().json(false));
     }
 
-    match check_ticket(&params.ticket, &ticket_cache, &extract_addr(&req), &tt, &activity_sender).await {
+    match check_ticket(&ticket_id, &ticket_cache, &extract_addr(&req), &tt, &activity_sender).await {
         Ok(ticket) => {
-            log_w(Some(&start_time), &params.ticket, &extract_addr(&req), &ticket.user_uri, "is_ticket_valid", "", ResultCode::Ok);
+            log_w(Some(&start_time), &ticket_id, &extract_addr(&req), &ticket.user_uri, "is_ticket_valid", "", ResultCode::Ok);
             Ok(HttpResponse::Ok().json(true))
         },
         Err(e) => {
-            log_w(Some(&start_time), &params.ticket, &extract_addr(&req), "", "is_ticket_valid", "", e);
+            log_w(Some(&start_time), &ticket_id, &extract_addr(&req), "", "is_ticket_valid", "", e);
             Ok(HttpResponse::Ok().json(false))
         },
     }
@@ -195,7 +243,10 @@ async fn authenticate(
             }
 
             log(Some(&start_time), &uinf, "authenticate", &uinf.ticket.user_uri, ResultCode::Ok);
-            Ok(HttpResponse::Ok().json(r))
+            
+            // Set HttpOnly cookie with ticket for secure session management
+            let cookie = create_ticket_cookie(&uinf.ticket.id, uinf.ticket.end_time);
+            Ok(HttpResponse::Ok().cookie(cookie).json(r))
         },
         Err(e) => {
             log(Some(&start_time), &uinf, "authenticate", login, e.result);
@@ -227,7 +278,7 @@ pub(crate) async fn get_rights(
     params: web::Query<TicketUriRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -242,7 +293,8 @@ pub(crate) async fn get_rights(
         },
     };
 
-    if let (Some(u), Some(_)) = (&params.user_id, &params.ticket) {
+    // Override user_uri if user_id parameter is provided (for checking other user's rights)
+    if let Some(u) = &params.user_id {
         uinf.ticket.user_uri = u.to_owned();
     }
 
@@ -277,7 +329,7 @@ pub(crate) async fn get_membership(
     params: web::Query<TicketUriRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
@@ -335,7 +387,7 @@ pub(crate) async fn get_rights_origin(
     params: web::Query<TicketUriRequest>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,

@@ -1,3 +1,4 @@
+use crate::auth::create_ticket_cookie;
 use crate::common::{check_external_enter, extract_addr, extract_initiator, log, UserContextCache, UserInfo};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
@@ -182,7 +183,9 @@ pub async fn sbis_authenticate(
             }
 
             log(Some(&start_time), &uinf, "sbis_authenticate", &uinf.ticket.user_uri, ResultCode::Ok);
-            Ok(HttpResponse::Ok().json(r))
+            // Set HttpOnly cookie with ticket for secure session management
+            let cookie = create_ticket_cookie(&uinf.ticket.id, uinf.ticket.end_time);
+            Ok(HttpResponse::Ok().cookie(cookie).json(r))
         },
         Err(e) => {
             log(Some(&start_time), &uinf, "sbis_authenticate", &link_value, e.result);

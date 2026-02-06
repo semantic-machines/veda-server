@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::common::{get_user_info, AuthAccessConfig, UserContextCache, UserId};
+use crate::common::{get_ticket, get_user_info, AuthAccessConfig, UserContextCache, UserId};
 use crate::files::{get_file, is_locked, put_file, to_file_item, update_lock_info, update_unlock_info, FileItem};
 use actix_multipart::Multipart;
 use actix_web::body::Body;
@@ -18,11 +18,21 @@ use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use mime::Mime;
 use std::sync::Arc;
-use v_common::az_impl::az_lmdb::LmdbAzContext;
+use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::MStorageClient;
 use v_common::v_api::common_type::ResultCode;
 use xml::escape::escape_str_pcdata;
+
+/// Get ticket from URL path or fallback to cookie.
+/// If path_ticket is "_" or empty, try to read from cookie.
+fn resolve_ticket(path_ticket: &str, req: &HttpRequest) -> Option<String> {
+    if path_ticket.is_empty() || path_ticket == "_" {
+        get_ticket(req, &None)
+    } else {
+        Some(path_ticket.to_owned())
+    }
+}
 
 pub(crate) async fn handle_webdav_put(
     path: web::Path<(String, String, String)>,
@@ -30,14 +40,15 @@ pub(crate) async fn handle_webdav_put(
     payload: Multipart,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
 ) -> ActixResult<impl Responder> {
-    let (ticket, file_id, _file_name) = path.into_inner();
+    let (path_ticket, file_id, _file_name) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
 
-    let uinf = match get_user_info(Some(ticket.clone()), &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(ticket.clone(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res);
@@ -50,7 +61,7 @@ pub(crate) async fn handle_webdav_put(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    let response_result = put_file(payload, Some(bytes), ticket_cache, &db, &az, req, &activity_sender, Some(ticket), Some(file_item), &auth_config).await;
+    let response_result = put_file(payload, Some(bytes), ticket_cache, &db, &az, req, &activity_sender, ticket, Some(file_item), &auth_config).await;
 
     match response_result {
         Ok(mut response) => {
@@ -66,10 +77,11 @@ pub(crate) async fn handle_webdav_options_2(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id) = path.into_inner();
+    let (path_ticket, file_id) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
     handle_webdav_options(ticket, file_id, req, ticket_cache, db, az, activity_sender).await
 }
 pub(crate) async fn handle_webdav_options_3(
@@ -77,23 +89,24 @@ pub(crate) async fn handle_webdav_options_3(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, _) = path.into_inner();
+    let (path_ticket, file_id, _) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
     handle_webdav_options(ticket, file_id, req, ticket_cache, db, az, activity_sender).await
 }
 
 async fn handle_webdav_options(
-    ticket: String,
+    ticket: Option<String>,
     file_id: String,
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let uinf = match get_user_info(Some(ticket), &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(ticket, &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res);
@@ -116,25 +129,26 @@ pub(crate) async fn handle_webdav_head(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, _file_name) = path.into_inner();
-    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, true, header::DispositionType::Inline, auth_config).await
+    let (path_ticket, file_id, _file_name) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
+    get_file(ticket, file_id.as_str(), ticket_cache, db, az, req, activity_sender, true, header::DispositionType::Inline, auth_config).await
 }
 
 async fn handle_webdav_propfind(
-    ticket: String,
+    ticket: Option<String>,
     file_id: String,
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     is_file: bool,
 ) -> io::Result<HttpResponse> {
-    let uinf = match get_user_info(Some(ticket.clone()), &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(ticket.clone(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res);
@@ -147,10 +161,11 @@ async fn handle_webdav_propfind(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
+    let ticket_str = ticket.unwrap_or_else(|| "_".to_owned());
     if is_file {
-        Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket)))
+        Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket_str)))
     } else {
-        Ok(res_multistatus(&file_id_to_dav_xml(&file_item, ticket)))
+        Ok(res_multistatus(&file_id_to_dav_xml(&file_item, ticket_str)))
     }
 }
 
@@ -159,10 +174,11 @@ pub(crate) async fn handle_webdav_propfind_3(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, _file_name) = path.into_inner();
+    let (path_ticket, file_id, _file_name) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
     handle_webdav_propfind(ticket, file_id, req, ticket_cache, db, az, activity_sender, true).await
 }
 
@@ -171,10 +187,11 @@ pub(crate) async fn handle_webdav_propfind_2(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id) = path.into_inner();
+    let (path_ticket, file_id) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
     handle_webdav_propfind(ticket, file_id, req, ticket_cache, db, az, activity_sender, false).await
 }
 
@@ -183,12 +200,13 @@ pub(crate) async fn handle_webdav_proppatch(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, _file_name) = path.into_inner();
+    let (path_ticket, file_id, _file_name) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
 
-    let uinf = match get_user_info(Some(ticket.clone()), &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(ticket.clone(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res);
@@ -201,20 +219,22 @@ pub(crate) async fn handle_webdav_proppatch(
         Err(e) => return Ok(HttpResponse::new(StatusCode::from_u16(e as u16).unwrap())),
     };
 
-    Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket)))
+    let ticket_str = ticket.unwrap_or_else(|| "_".to_owned());
+    Ok(res_multistatus(&file_item_to_dav_xml(&file_item, ticket_str)))
 }
 pub(crate) async fn handle_webdav_lock(
     path: web::Path<(String, String, String)>,
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, file_name) = path.into_inner();
+    let (path_ticket, file_id, file_name) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
 
-    let uinf = match get_user_info(Some(ticket.clone()), &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(ticket.clone(), &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res);
@@ -228,6 +248,7 @@ pub(crate) async fn handle_webdav_lock(
     };
 
     let token_in_request = extract_token_from_header(&req).await;
+    let ticket_str = ticket.unwrap_or_else(|| "_".to_owned());
 
     match token_in_request {
         None => {
@@ -237,7 +258,7 @@ pub(crate) async fn handle_webdav_lock(
             } else {
                 let token = Utc::now().timestamp().to_string();
                 match update_lock_info(&token, &file_item, uinf, mstorage).await {
-                    ResultCode::Ok => Ok(build_lock_response(&token, &ticket, &file_id, &file_name)),
+                    ResultCode::Ok => Ok(build_lock_response(&token, &ticket_str, &file_id, &file_name)),
                     _ => error_response(ResultCode::InternalServerError),
                 }
             }
@@ -252,7 +273,7 @@ pub(crate) async fn handle_webdav_lock(
                         return error_response(ResultCode::BadRequest);
                     };
                     match update_lock_info(&in_token, &file_item, uinf, mstorage).await {
-                        ResultCode::Ok => Ok(build_lock_response(&in_token, &ticket, &file_id, &file_name)),
+                        ResultCode::Ok => Ok(build_lock_response(&in_token, &ticket_str, &file_id, &file_name)),
                         _ => error_response(ResultCode::InternalServerError),
                     }
                 } else {
@@ -261,7 +282,7 @@ pub(crate) async fn handle_webdav_lock(
             } else {
                 let token = Utc::now().timestamp().to_string();
                 match update_lock_info(&token, &file_item, uinf, mstorage).await {
-                    ResultCode::Ok => Ok(build_lock_response(&token, &ticket, &file_id, &file_name)),
+                    ResultCode::Ok => Ok(build_lock_response(&token, &ticket_str, &file_id, &file_name)),
                     _ => error_response(ResultCode::InternalServerError),
                 }
             }
@@ -274,13 +295,14 @@ pub(crate) async fn handle_webdav_unlock(
     req: HttpRequest,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     mstorage: web::Data<Mutex<MStorageClient>>,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, _file_name) = path.into_inner();
+    let (path_ticket, file_id, _file_name) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
 
-    let uinf = match get_user_info(Some(ticket), &req, &ticket_cache, &db, &activity_sender).await {
+    let uinf = match get_user_info(ticket, &req, &ticket_cache, &db, &activity_sender).await {
         Ok(u) => u,
         Err(res) => {
             //log(Some(&start_time), &UserInfo::default(), "get_file", file_id, res);
@@ -316,28 +338,29 @@ pub(crate) async fn handle_webdav_unlock(
 }
 
 async fn handle_webdav_get(
-    ticket: String,
+    ticket: Option<String>,
     file_id: String,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    get_file(Some(ticket.to_string()), file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Inline, auth_config).await
+    get_file(ticket, file_id.as_str(), ticket_cache, db, az, req, activity_sender, false, header::DispositionType::Inline, auth_config).await
 }
 
 pub(crate) async fn handle_webdav_get_3(
     path: web::Path<(String, String, String)>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id, _file_name) = path.into_inner();
+    let (path_ticket, file_id, _file_name) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
     handle_webdav_get(ticket, file_id, ticket_cache, db, az, req, activity_sender, auth_config).await
 }
 
@@ -345,12 +368,13 @@ pub(crate) async fn handle_webdav_get_2(
     path: web::Path<(String, String)>,
     ticket_cache: web::Data<UserContextCache>,
     db: web::Data<AStorage>,
-    az: web::Data<Mutex<LmdbAzContext>>,
+    az: web::Data<Mutex<AzContext>>,
     req: HttpRequest,
     activity_sender: web::Data<Arc<Mutex<Sender<UserId>>>>,
     auth_config: web::Data<AuthAccessConfig>,
 ) -> io::Result<HttpResponse> {
-    let (ticket, file_id) = path.into_inner();
+    let (path_ticket, file_id) = path.into_inner();
+    let ticket = resolve_ticket(&path_ticket, &req);
     handle_webdav_get(ticket, file_id, ticket_cache, db, az, req, activity_sender, auth_config).await
 }
 

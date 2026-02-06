@@ -1,4 +1,6 @@
+use crate::auth::create_ticket_cookie;
 use crate::common::{extract_addr, extract_initiator};
+use v_common::module::ticket::Ticket;
 use actix_web::{web, HttpRequest, HttpResponse};
 use futures::lock::Mutex;
 use hex;
@@ -524,7 +526,10 @@ pub async fn verify_sms_auth(
     ).await {
         Ok(auth_result) => {
             info!("[{}] DEBUG: verify_sms_auth success", request_id);
-            Ok(HttpResponse::Ok().json(auth_result))
+            // Set HttpOnly cookie with ticket for secure session management
+            let ticket = Ticket::from(auth_result.clone());
+            let cookie = create_ticket_cookie(&ticket.id, ticket.end_time);
+            Ok(HttpResponse::Ok().cookie(cookie).json(auth_result))
         },
         Err(e) => {
             error!("[{}] DEBUG: verify_sms_auth failed: {:?}", request_id, e);
