@@ -10,13 +10,16 @@ use actix_web::{get, HttpMessage, HttpRequest};
 use actix_web::{web, HttpResponse};
 use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
+use v_common::az_impl::LmdbAzContext;
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use async_std::task::sleep;
-use v_authorization_impl_tt2_lmdb::AzContext;
+
+// Type alias for authorization context
+type AzContext = LmdbAzContext;
 
 // Initial average authentication duration in milliseconds (used before real stats are collected)
 const INITIAL_AVG_AUTH_DURATION_MS: u64 = 10;

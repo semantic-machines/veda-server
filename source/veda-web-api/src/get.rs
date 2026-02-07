@@ -12,7 +12,6 @@ use futures::lock::Mutex;
 use std::io;
 use std::sync::Arc;
 use std::time::Instant;
-use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::module::info::ModuleInfo;
 use v_common::module::ticket::Ticket;
 use v_common::storage::async_storage::{check_user_in_group, get_individual_from_db, AStorage};
@@ -20,6 +19,10 @@ use v_common::v_api::common_type::ResultCode;
 use v_common::v_queue::consumer::Consumer;
 use v_common::v_queue::record::Mode;
 use v_individual_model::onto::individual::Individual;
+use v_common::az_impl::LmdbAzContext;
+
+// Type alias for authorization context
+type AzContext = LmdbAzContext;
 
 pub const SUPER_USER_GROUP: &str = "cfg:SuperUser";
 

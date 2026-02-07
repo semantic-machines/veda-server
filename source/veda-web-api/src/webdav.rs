@@ -18,11 +18,14 @@ use futures::channel::mpsc::Sender;
 use futures::lock::Mutex;
 use mime::Mime;
 use std::sync::Arc;
-use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::storage::async_storage::AStorage;
 use v_common::v_api::api_client::MStorageClient;
 use v_common::v_api::common_type::ResultCode;
 use xml::escape::escape_str_pcdata;
+use v_common::az_impl::LmdbAzContext;
+
+// Type alias for authorization context
+type AzContext = LmdbAzContext;
 
 /// Get ticket from URL path or fallback to cookie.
 /// If path_ticket is "_" or empty, try to read from cookie.

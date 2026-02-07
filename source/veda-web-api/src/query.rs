@@ -12,7 +12,6 @@ use std::io;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
-use v_authorization_impl_tt2_lmdb::AzContext;
 use v_common::module::common::c_load_onto;
 use v_common::search::clickhouse_client::CHClient;
 use v_common::search::common::{load_prefixes, AuthorizationLevel, FTQuery, PrefixesCache, QueryResult, ResultFormat};
@@ -24,6 +23,10 @@ use v_common::v_api::common_type::{OptAuthorize, ResultCode};
 use v_individual_model::onto::individual::Individual;
 use v_individual_model::onto::json2individual::parse_json_to_individual;
 use v_individual_model::onto::onto_index::OntoIndex;
+use v_common::az_impl::LmdbAzContext;
+
+// Type alias for authorization context
+type AzContext = LmdbAzContext;
 
 pub(crate) struct QueryEndpoints {
     pub vql_client: Mutex<VQLClient>,
